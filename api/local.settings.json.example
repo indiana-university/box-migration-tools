@@ -1,0 +1,12 @@
+{
+    "IsEncrypted": false,
+    "Values": {
+        "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+        "FUNCTIONS_WORKER_RUNTIME": "dotnet",
+        "BoxConfigJson": "<a json blob>",
+        "LogTableStorageConnectionString":"<a connection string>",
+        "LogFilePath": "<a path on your local file system>",
+        "APPINSIGHTS_INSTRUMENTATIONKEY": "<a guid>",
+        "APPLICATIONINSIGHTS_CONNECTION_STRING": "InstrumentationKey=<a guid>"
+    }
+}
