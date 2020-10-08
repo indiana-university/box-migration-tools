@@ -6,6 +6,17 @@ These webhooks (HTTP API endpoints) faciliate the transition of an enterprise Bo
 
 This code is provided as-is. This code has has been used in a production environment and to the best of our knowledge is free of significant bugs and defects. Use of this code is at your own risk. Indiana University assumes no liability for its use. Please use the GitHub Issues feature for questions or other problems. The maintainers of this repository will answer questions as they are able.
 
+# Acknowledgements
+
+This code was developed by the following [UITS](https://uits.iu.edu) staff at [Indiana Univerisity](https://iu.edu):
+
+[Venkata Bhupathi](https://github.com/vhupathi)
+[Jared Drake](https://github.com/jardrake)
+[Jason Francis](https://github.com/jasonfrancis)
+[Satish Garneni](https://github.com/sgarneni)
+[Satwik Narlanka](https://github.com/satwiknarlanka)
+[John Hoerr](https://github.com/jhoerr), Technical Lead
+
 # Implementation
 
 This solution is architected as a serverless HTTP API for the Azure Functions platform and written in C#. It makes heavy use of the [Box SDK](https://developer.box.com/sdks-and-tools/), which is available in several other languages (Java, Node, Python) and also has a CLI implementation. We will attempt to document the overall process in sufficient detail that it can be reimplememented in the architecture and language of your choosing.
