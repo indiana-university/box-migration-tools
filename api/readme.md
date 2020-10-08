@@ -10,12 +10,14 @@ This code is provided as-is. This code has has been used in a production environ
 
 This code was developed by the following [UITS](https://uits.iu.edu) staff at [Indiana Univerisity](https://iu.edu):
 
-[Venkata Bhupathi](https://github.com/vhupathi)
-[Jared Drake](https://github.com/jardrake)
-[Jason Francis](https://github.com/jasonfrancis)
-[Satish Garneni](https://github.com/sgarneni)
-[Satwik Narlanka](https://github.com/satwiknarlanka)
-[John Hoerr](https://github.com/jhoerr), Technical Lead
+* [Venkata Bhupathi](https://github.com/vhupathi)  
+* [Jared Drake](https://github.com/jardrake)  
+* [Jason Francis](https://github.com/jasonfrancis)  
+* [Satish Garneni](https://github.com/sgarneni)  
+* [Satwik Narlanka](https://github.com/satwiknarlanka)  
+* [John Hoerr](https://github.com/jhoerr), Technical Lead  
+* Nancy May, Product Owner
+* Jacob Famer, Director
 
 # Implementation
 
