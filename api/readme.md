@@ -4,7 +4,7 @@ These webhooks (HTTP API endpoints) faciliate the transition of an enterprise Bo
 
 # Notice of Use
 
-This code is provided as-is. This code has has been used in a production environment and to the best of our knowledge is free of significant bugs and defects. Use of this code is at your own risk. Indiana University assumes no liability for its use. Please use the GitHub Issues feature for questions or other problems. The maintainers of this repository will answer questions as they are able. [Private fee-based support and consulting is available](mailto:jhoerr@gmail.com?subject=Box%20migration%20support%20request).
+This code is provided as-is. This code has has been used in a production environment and to the best of our knowledge is free of significant bugs and defects. Use of this code is at your own risk. Indiana University assumes no liability for its use. Please use the GitHub Issues feature for questions or other problems. The maintainers of this repository will answer questions as they are able.
 
 # Implementation
 
@@ -44,7 +44,7 @@ If you choose to host these endpoints on the Azure Functions platform, this repo
 
 Three logging sinks are currently supported.
 
-## Local Log File##
+## Local Log File
 
 Logs events to the local file system. Requires setting the `LogFilePath` environment variable.
 
