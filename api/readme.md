@@ -10,6 +10,22 @@ This code is provided as-is. This code has has been used in a production environ
 
 This solution is architected as a serverless HTTP API for the Azure Functions platform and written in C#. It makes heavy use of the [Box SDK](https://developer.box.com/sdks-and-tools/), which is available in several other languages (Java, Node, Python) and also has a CLI implementation. We will attempt to document the overall process in sufficient detail that it can be reimplememented in the architecture and language of your choosing.
 
+# Local Testing
+
+To build and run this Azure Functions project, first install the [.Net Core 3.1 SDK](https://dotnet.microsoft.com/download/dotnet-core/3.1). Then, from the command line, run:
+
+```
+dotnet build
+```
+
+If you'd like to run the functions locally, install the **v3** version of [Azure Functions Core Tools](https://www.npmjs.com/package/azure-functions-core-tools). Then, from the command line, run:
+
+```
+func start
+```
+
+A local web server will start and host the functions on `http://localhost:7071`. The API can then be engaged through a tool like curl or Postman. Note that a `local.settings.json` is required as described in the [Box Authentication](#box-authentication) and [Settings](#settings) section below.
+
 # Box Authentication
 
 These endpoints interact with the Box API. Before using these endpoints you must first [create a Box application](https://developer.box.com/guides/applications/) that uses [JWT Auth](https://developer.box.com/guides/authentication/jwt/). This application must have the following configuration settings:
@@ -31,14 +47,20 @@ Once the app is configured as described above, you'll want to create a public/pr
 
 # Settings
 
+## Required Settings
+
 The following environment variables are *must be set* prior to using this code:
 
 `BoxConfigJson`: The contents of the `.json` file described in the [Box Authentication](#box-authentication) section of this document.
 
+## Optional Settings
+
 The following environment variables are *can optionally be set* prior to using this code:
 
-`LogFilePath`: A file system path at which a local log file should be created, to be used for long-term event logging.
-`LogTableStorageConnectionString`: A connection string to an [Azure Storage Table](https://azure.microsoft.com/en-us/services/storage/tables/), to be used for long-term event logging.
+`LogFilePath`: A file system path at which a local log file should be created, to be used for long-term event logging.  
+
+`LogTableStorageConnectionString`: A connection string to an [Azure Storage Table](https://azure.microsoft.com/en-us/services/storage/tables/), to be used for long-term event logging.  
+
 `APPINSIGHTS_INSTRUMENTATIONKEY`: A GUID for an [Azure Application Insights](https://docs.microsoft.com/en-us/azure/azure-monitor/app/app-insights-overview) instance. **Important**: see [logging notes on Azure Application Insights](#azure-application-insights) prior to using this setting!
 
 If you choose to host these endpoints on the Azure Functions platform, this repo includes a `local.settings.json.example` file. All required settings are included there. You can make a copy as `local.settings.json` and fill out required settings if you wish to run and debug the endpoints locally. This `local.settings.json` file can be pushed to Azure Functions when deploying the app using the [Azure Functions Core Tools](https://github.com/Azure/azure-functions-core-tools) CLI.
