@@ -14,13 +14,16 @@ This solution is architected as a serverless HTTP API for the Azure Functions pl
 
 These endpoints interact with the Box API. Before using these endpoints you must first [create a Box application](https://developer.box.com/guides/applications/) that uses [JWT Auth](https://developer.box.com/guides/authentication/jwt/). This application must have the following configuration settings:
 
-**Authentication Method**: Must be *OAuth 2.0 with JWT (Server Authenticaiton)*
-**Application Access**: Must be *Enterprise*.
-**Application Scopes**: The following must be selected:  
+**Authentication Method**: Must be *OAuth 2.0 with JWT (Server Authenticaiton)*  
+
+**Application Access**: Must be *Enterprise*.  
+
+**Application Scopes**: The following must be selected:     
   + Read and write all files and folders stored in box
   + Manage users
   + Manage groups
-**Advanced Features**: The following must be selected:
+
+**Advanced Features**: The following must be selected:  
   + Perform Actions as Users
   + Generate User Access Tokens
 
