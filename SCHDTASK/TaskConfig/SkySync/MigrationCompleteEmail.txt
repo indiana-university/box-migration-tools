@@ -1,0 +1,42 @@
+Good news! Your files have been migrated from Box to {{SERVICE}}.
+
+<br /><br />
+
+Your next steps should be:
+
+<br /><br />
+
+{{FINDYOURFILES}}
+
+<br /><br />
+
+<b>Review your job report.</b> <a href="https://securestorage.webhost.iu.edu/report/migration/box/my/jobs">https://securestorage.webhost.iu.edu/report/migration/box/my/jobs</a>
+
+<br />
+
+<ul><li><b>Review the "flagged Items" in your report.</b> You will be able to see problematic files here such as files that did not migrate properly. You will want to address and resolve any issues quickly to avoid losing files. Tips for resolving flagged items can be found at <a href="https://kb.iu.edu/d/bmrp">Interpret flagged items in your "After Box Migration" report</a>.</li></ul>
+
+<ul><li><b>Review the "shared items" in your report.</b> If you were sharing documents with other users, the collaborations you had in Box should have been created in the destination service, but you may want to notify your collaborators, so they know where to look now. All IU users have accounts in both <a href="https://uits.iu.edu/onedrive">Microsoft OneDrive at IU</a> or <a href="https://uits.iu.edu/google">Google at IU My Drive</a>, even if you have never accessed them before.</li></ul>
+
+<b>IMPORTANT: Do not create new files or folders in your personal Box account now that your files have been migrated. They will not be migrated again and you will lose that data when IU's contract with Box expires.</b>
+
+<br /><br />
+
+For live or recorded webinars about the migration, please visit <a href="https://ittraining.iu.edu/get-started/">UITS IT Training</a>.
+
+<br /><br />
+
+For more details about the Box migration, visit: <a href="https://storage.iu.edu/">storage.iu.edu</a>
+
+<br /><br />
+
+If your questions aren't answered by the resources listed above, please reach out to us.
+
+<br /><br />
+
+UITS Support Center<br/>
+Phone, email, and chat support<br/>
+812.855.6789<br/>
+317.274.4357<br/>
+<a href="mailto:ithelp@iu.edu">ithelp@iu.edu</a><br/>
+<a href="http://ithelplive.iu.edu">http://ithelplive.iu.edu</a>
