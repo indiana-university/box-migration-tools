@@ -38,8 +38,8 @@ namespace boxaccountorchestration
         { 
             public string UserId { get; set; } 
             public string ItemId { get; set; }  
-            public string ItemType { get; set; } 
-            public string ManagedUserId{ get; set;}
+            public string ItemType { get; set; }
+            public string FolderId { get => "0"; }
             
         }
 
@@ -48,42 +48,46 @@ namespace boxaccountorchestration
             [OrchestrationTrigger] IDurableOrchestrationContext context, HttpRequest req,           
             ExecutionContext ctx)
         {            
-            var data = context.GetInput<RequestParams>();
+            var data =  context.GetInput<RequestParams>();
             var log = Common.GetLogger(ctx, req, data.UserId);
-            var client = await Common.GetBoxUserClient(log, data.UserId);          
-            await context.CallSubOrchestratorAsync("TraverseCollabs", client);
-            await context.CallSubOrchestratorAsync("DeleteUserData", client);
-            await context.CallActivityAsync("ReactivateTheUserAccount", client);
-            await context.CallActivityAsync("RollOutTheUser", client);           
+            var boxClient = await CreateBoxClient(log, data.UserId); 
+
+            //var client = await Common.GetBoxUserClient(log, data.UserId);          
+            await context.CallSubOrchestratorAsync("TraverseCollabs", boxClient);
+            //await context.CallSubOrchestratorAsync("DeleteUserData", client);
+            await context.CallActivityAsync("ReactivateTheUserAccount", boxClient);
+            //await context.CallActivityAsync("RollOutTheUser", client);           
         }  
 
         [FunctionName("BoxAccountOrchestration_HttpStart")]
         public static async Task<HttpResponseMessage> HttpStart(
             [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post")] HttpRequestMessage req,
             [DurableClient] IDurableOrchestrationClient starter,
-            Microsoft.Extensions.Logging.ILogger log)
+            Serilog.ILogger log)
         {
             // Function input comes from the request content.         
             string instanceId = await starter.StartNewAsync("BoxAccountOrchestration", null);
 
-            log.LogInformation($"Started orchestration with ID = '{instanceId}'.");
+            log.Information($"Started orchestration with ID = '{instanceId}'.");
 
             return starter.CreateCheckStatusResponse(req, instanceId);
         }
         
         [FunctionName("RollOutTheUser")]
-        public static async Task RollOutTheUser([ActivityTrigger] IDurableActivityContext context, BoxClient boxClient, Microsoft.Extensions.Logging.ILogger log)
+        public static async Task RollOutTheUser([ActivityTrigger] IDurableActivityContext context, Serilog.ILogger log)
         {
-            var data = context.GetInput<RequestParams>();
-            log.LogInformation($"Roll out the user {data.UserId} from IU");
-            await boxClient.UsersManager.DeleteEnterpriseUserAsync(data.UserId, true, false);          
+           var data =  context.GetInput<RequestParams>();
+            var boxClient = await CreateBoxClient(log, data.UserId);  
+            log.Information($"Roll out the user {data.UserId} from IU");
+            await boxClient.UsersManager.DeleteEnterpriseUserAsync(data.UserId, true, false);  // ???? may be we need to set User's Enterprise to NULL        
         }
         
         [FunctionName("ReactivateTheUserAccount")]
-        public static async Task ReactivateTheUserAccount([ActivityTrigger] IDurableActivityContext context, BoxClient boxClient, Microsoft.Extensions.Logging.ILogger log)
+        public static async Task ReactivateTheUserAccount([ActivityTrigger] IDurableActivityContext context, Serilog.ILogger log )
         {
-            var data = context.GetInput<RequestParams>();
-            log.LogInformation($"Reactivate the user account {data.UserId}.");
+            var data =  context.GetInput<RequestParams>();
+            var boxClient = await CreateBoxClient(log, data.UserId);  
+            log.Information($"Reactivate the user account {data.UserId}.");
             await boxClient.UsersManager.UpdateUserInformationAsync(new BoxUserRequest()
             {
                 Id = data.UserId,
@@ -93,34 +97,36 @@ namespace boxaccountorchestration
 
         [FunctionName("RemoveCollabs")]
         public static async Task RemoveCollabs(
-            [OrchestrationTrigger] IDurableOrchestrationContext context, BoxClient boxClient, BoxCollaboration collab)
+            [OrchestrationTrigger] IDurableOrchestrationContext context, Serilog.ILogger log, BoxCollaboration collab)
         {
+            var data =  context.GetInput<RequestParams>();
+            var boxClient = await CreateBoxClient(log, data.UserId);  
             await boxClient.CollaborationsManager.RemoveCollaborationAsync(collab.Id);
 
         }
         [FunctionName("TraverseCollabs")]
         public static async Task TraverseCollbs(
-            [OrchestrationTrigger] IDurableOrchestrationContext context, BoxClient boxClient)
+            [OrchestrationTrigger] IDurableOrchestrationContext context, Serilog.ILogger log)
         {
             var data =  context.GetInput<RequestParams>();
-            var existingCollabs = data.ItemType == "file"         // How to know whether these files/folders are IU-Owned or not?
-                    ? await GetFileCollaborators(boxClient, data.ItemId)
-                    : await GetFolderCollaborators(boxClient, data.ItemId); 
+            var boxClient = await CreateBoxClient(log, data.UserId);            
             var enterpriseUsers = boxClient.UsersManager.GetEnterpriseUsersAsync( filterTerm: data.UserId, fields: new[]{"name", "login"} );
- 
-           existingCollabs = existingCollabs
-                        .Where(c => c.Item != null && c.Item.Id == data.ItemId)  
-                        .Where(c => c.CreatedBy.Login == data.UserId && enterpriseUsers.Result.Entries.Any(u => u.Enterprise.Name == c.CreatedBy.Enterprise.Name ))                       
-                        .ToList();   
+            var existingRootCollabs = await boxClient.FoldersManager.GetCollaborationsAsync(data.FolderId);
+           
+            var rootFolderCollabs = existingRootCollabs.Entries
+                            .Where(c => c.CreatedBy.Login == data.UserId && enterpriseUsers.Result.Entries.Any(u => u.Enterprise.Name == c.CreatedBy.Enterprise.Name ))
+                            .Where(c => c.AccessibleBy != null && c.AccessibleBy.Id == data.UserId);
+            
             var collabRemoveTasks = new List<Task>();
-            foreach (var collab in existingCollabs)
-            {
-                var removeTask = context.CallSubOrchestratorAsync("RemoveCollabs", collab);               
-                collabRemoveTasks.Add(removeTask);               
-            }
+                foreach (var collab in rootFolderCollabs)
+                {
+                    var removeTask = context.CallSubOrchestratorAsync("RemoveCollabs", collab);               
+                    collabRemoveTasks.Add(removeTask);               
+                }
             await Task.WhenAll(collabRemoveTasks);
-        }        
-        
+        }         
+           
+        private static async Task<BoxClient> CreateBoxClient (Serilog.ILogger log, string UserId) => await Common.GetBoxUserClient(log, UserId);
         private static Task RemoveCollabs(BoxClient sourceClient, BoxCollaboration c)
         {
            return sourceClient.CollaborationsManager.RemoveCollaborationAsync(c.Id);             
