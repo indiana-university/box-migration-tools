@@ -15,7 +15,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using System;
 using System.Linq;
-using Serilog;
+
 
 namespace boxaccountorchestration
 {
@@ -41,28 +41,28 @@ namespace boxaccountorchestration
             public string FolderId { get; set; } = "0";
             
         }
-        private static Serilog.ILogger Logger = Common.CreateLogger();
 
         [FunctionName("BoxAccountOrchestration")]
         public static async Task RunOrchestrator(
-            [OrchestrationTrigger] IDurableOrchestrationContext context, HttpRequest req,           
-            ExecutionContext ctx, Microsoft.Extensions.Logging.ILogger log)
+            [OrchestrationTrigger] IDurableOrchestrationContext context,            
+            ExecutionContext ctx, ILogger log)
         { 
             log.LogInformation($"Start 'BoxAccountOrchestration' Function....");           
-            var data =  context.GetInput<RequestParams>();
-            //var log = Common.GetLogger(ctx, req, data.UserId);
-            //var boxClient = await CreateBoxClient(Logger, data.UserId); 
+            var data =  context.GetInput<RequestParams>();             
             try
             {
-                await context.CallSubOrchestratorAsync("TraverseCollabs", data.UserId);
+                log.LogInformation($"Calling 'TraverseCollabs' Function...."); 
+                await context.CallSubOrchestratorAsync("TraverseCollabs", data);
+                //log.LogInformation($"Calling 'DeleteUserData' Function...."); 
                 //await context.CallSubOrchestratorAsync("DeleteUserData", client);
-                await context.CallActivityAsync("ReactivateTheUserAccount", data.UserId);
-                await context.CallActivityAsync("RollOutTheUser", data.UserId);  
+                log.LogInformation($"Calling 'ReactivateTheUserAccount' Function...."); 
+                await context.CallActivityAsync("ReactivateTheUserAccount", data);
+                log.LogInformation($"Calling 'RollOutTheUser' Function...."); 
+                await context.CallActivityAsync("RollOutTheUser", data);  
             }
             catch(Exception ex)
             {
                 log.LogInformation($"BoxAccountOrchestration - throws an exception {ex}");
-
             }
                     
         }  
@@ -71,13 +71,15 @@ namespace boxaccountorchestration
         public static async Task<HttpResponseMessage> HttpStart(
             [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post")] HttpRequestMessage req,
             [DurableClient] IDurableOrchestrationClient starter,
-            Microsoft.Extensions.Logging.ILogger log)
+            ILogger log)
         {
             // Function input comes from the request content.    
             log.LogInformation($"Start 'BoxAccountOrchestration_HttpStart' Function...."); 
-            var param = await req.Content.ReadAsAsync<RequestParams>();
-            log.LogInformation($"params {param.UserId}, {param.FolderId}");
-            string instanceId = await starter.StartNewAsync("BoxAccountOrchestration", param.UserId);
+            var data = await req.Content.ReadAsAsync<RequestParams>();
+            log.LogInformation($"params are {data.UserId}, {data.FolderId}");
+
+            log.LogInformation($"Calling 'BoxAccountOrchestration' Function...."); 
+            string instanceId = await starter.StartNewAsync("BoxAccountOrchestration", data);
 
             log.LogInformation($"Start orchestration with ID = '{instanceId}'.");
 
@@ -85,11 +87,11 @@ namespace boxaccountorchestration
         }
         
         [FunctionName("RollOutTheUser")]
-        public static async Task RollOutTheUser([ActivityTrigger] IDurableActivityContext context, Microsoft.Extensions.Logging.ILogger log)
+        public static async Task RollOutTheUser([ActivityTrigger] IDurableActivityContext context, ILogger log)
         {
             log.LogInformation($"Start 'RollOutTheUser' Function...."); 
             var data =  context.GetInput<RequestParams>();
-            var boxClient = await CreateBoxClient(Logger, data.UserId); 
+            var boxClient = await CreateBoxClient(data.UserId); 
             
             await boxClient.UsersManager.UpdateUserInformationAsync(new BoxUserRequest()
             {
@@ -101,11 +103,11 @@ namespace boxaccountorchestration
         }
         
         [FunctionName("ReactivateTheUserAccount")]
-        public static async Task ReactivateTheUserAccount([ActivityTrigger] IDurableActivityContext context, Microsoft.Extensions.Logging.ILogger log )
+        public static async Task ReactivateTheUserAccount([ActivityTrigger] IDurableActivityContext context, ILogger log )
         {
             log.LogInformation($"Start 'ReactivateTheUserAccount' Function...."); 
             var data =  context.GetInput<RequestParams>();
-            var boxClient = await CreateBoxClient(Logger, data.UserId); 
+            var boxClient = await CreateBoxClient(data.UserId); 
             
             await boxClient.UsersManager.UpdateUserInformationAsync(new BoxUserRequest()
             {
@@ -117,7 +119,7 @@ namespace boxaccountorchestration
         }
 
        // [FunctionName("RemoveCollabs")]
-        // public static async Task RemoveCollabs([ActivityTrigger] IDurableActivityContext context, BoxCollaboration c, Microsoft.Extensions.Logging.ILogger log)
+        // public static async Task RemoveCollabs([ActivityTrigger] IDurableActivityContext context, BoxCollaboration c, ILogger log)
         // {
         //     var data =  context.GetInput<RequestParams>();
         //     var boxClient = await CreateBoxClient(Logger, data.UserId); 
@@ -128,11 +130,11 @@ namespace boxaccountorchestration
 
         [FunctionName("TraverseCollabs")]
         public static async Task TraverseCollbs(
-            [OrchestrationTrigger] IDurableOrchestrationContext context,  Microsoft.Extensions.Logging.ILogger log)
+            [OrchestrationTrigger] IDurableOrchestrationContext context,  ILogger log)
         {
             log.LogInformation($"Start 'TraverseCollabs' Function....");
             var data = context.GetInput<RequestParams>();
-            var boxClient = await CreateBoxClient(Logger, data.UserId);
+            var boxClient = await CreateBoxClient(data.UserId);
             var enterpriseUsers = GetUser(data, boxClient);
 
             var existingRootCollabs = await boxClient.FoldersManager.GetCollaborationsAsync(data.FolderId);
@@ -165,34 +167,33 @@ namespace boxaccountorchestration
 
             return enterpriseUsers;
         }
+        public static string Env(string key)
+        {
+            var value = System.Environment.GetEnvironmentVariable(key);
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                throw new Exception($"'{key}' is missing from the environment. This is a required setting.");
+            }
+            return value;
+        }
+        private static async Task<BoxClient> CreateBoxClient (string UserId)
+        {
+            return await Task.Run(() =>
+            {
+                var configJson = Env("BoxConfigJson");                
+                Console.WriteLine("Creating Box admin client...");
+                var config = BoxConfig.CreateFromJsonString(configJson);
+                var auth = new BoxJWTAuth(config);
+                var adminToken = auth.AdminToken();
+                return auth.AdminClient(adminToken); 
+            });
+        }
 
-        private static async Task<BoxClient> CreateBoxClient (Serilog.ILogger log, string UserId) => await Common.GetBoxUserClient(log, UserId);
         private static Task RemoveCollabs(BoxClient sourceClient, BoxCollaboration c)
         {
            return sourceClient.CollaborationsManager.RemoveCollaborationAsync(c.Id);             
-        }
-        private static async Task<List<BoxCollaboration>> GetFolderCollaborators(BoxClient client, string itemId)
-        {
-            var collection = await client.FoldersManager.GetCollaborationsAsync(itemId);
-            return collection.Entries;
-        }           
-        private static async Task<List<BoxCollaboration>> GetFileCollaborators(BoxClient client, string itemId)
-        {
-            var collection = await client.FilesManager.GetCollaborationsCollectionAsync(itemId, autoPaginate: true);
-            return collection.Entries;
-        }
-        private static async Task ReactivateTheUserAccount(string boxUserId, BoxClient boxClient)
-        {
-            await boxClient.UsersManager.UpdateUserInformationAsync(new BoxUserRequest()
-            {
-                Id = boxUserId,
-                Status = "active"
-            });
-        }
-        private static async Task RollOutTheUser(string boxUserId, BoxClient boxClient)
-        {
-            await boxClient.UsersManager.DeleteEnterpriseUserAsync(boxUserId, true, false);
-        }
+        }      
+       
         private static async Task DeleteUserData(string fileId, string folderId, BoxClient boxClient)
         {
             var data =  new RequestParams();
