@@ -125,7 +125,7 @@ namespace boxaccountorchestration
             var boxClient = await CreateBoxClient(data.UserId); 
             var enterpriseUsers = GetUser(data.UserId, boxClient);
 
-            var existingRootCollabs = await boxClient.FoldersManager.GetCollaborationsAsync(data.FolderId);
+            var existingRootCollabs = await GetFolderCollaborators(boxClient, data.FolderId);
 
             var rootFolderCollabs = existingRootCollabs.Entries
                             .Where(c => c.CreatedBy.Login == data.UserId && enterpriseUsers.Result.Entries.Any(u => u.Enterprise.Name == c.CreatedBy.Enterprise.Name)) //IU Owned
@@ -184,15 +184,9 @@ namespace boxaccountorchestration
 
             return enterpriseUsers;
         }
-        public static string Env(string key)
-        {
-            var value = System.Environment.GetEnvironmentVariable(key);
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                throw new Exception($"'{key}' is missing from the environment. This is a required setting.");
-            }
-            return value;
-        }
+       
+           
+        
         private static async Task<BoxClient> CreateBoxClient (string UserId)
         {
             return await Task.Run(() =>
@@ -217,26 +211,21 @@ namespace boxaccountorchestration
                 return auth.UserClient(userToken, userId);
             });
         }
+        public static string Env(string key)
+            => string.IsNullOrWhiteSpace(key)
+                    ? throw new Exception($"'{key}' is missing from the environment. This is a required setting.")
+                    : System.Environment.GetEnvironmentVariable(key);
 
         private static async Task<BoxCollection<BoxCollaboration>> GetFolderCollaborators(BoxClient boxClient, string itemId)
-        {
-            System.Console.WriteLine($"The itemId: {itemId}");
-            var collection = await boxClient.FoldersManager.GetCollaborationsAsync(itemId);
-            return collection;
-        }
+            => await boxClient.FoldersManager.GetCollaborationsAsync(itemId);  
 
-        private static Task RemoveCollabs(BoxClient boxClient, BoxCollaboration c)
-        {
-           return boxClient.CollaborationsManager.RemoveCollaborationAsync(c.Id);             
-        }      
-       
-        private static async Task DeleteData(BoxItem item, BoxClient boxClient)
-        {
-            var data =  new RequestParams();
-            var deletedata =  item.Type == "file"
+        private static Task RemoveCollabs(BoxClient boxClient, BoxCollaboration c) 
+            => boxClient.CollaborationsManager.RemoveCollaborationAsync(c.Id);
+
+        private static async Task<bool> DeleteData(BoxItem item, BoxClient boxClient)
+            => item.Type == "file"
                     ? await boxClient.FilesManager.DeleteAsync(id: item.Id )
-                    : await boxClient.FoldersManager.DeleteAsync(id: item.Id, recursive: true);
-        }
+                    : await boxClient.FoldersManager.DeleteAsync(id: item.Id, recursive: true);       
 
     }
 }
