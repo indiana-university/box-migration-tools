@@ -82,7 +82,7 @@ namespace box_migration_automation
             Constants.ErrorStackTrace
         };
 
-        public static ILogger CreateLogger()
+        private static ILogger CreateLogger()
         {
             var loggerConfiguration = 
                 new LoggerConfiguration()
