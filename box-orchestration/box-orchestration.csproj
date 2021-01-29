@@ -8,7 +8,8 @@
     <PackageReference Include="Microsoft.Azure.WebJobs.Extensions.DurableTask" Version="2.1.1" />
     <PackageReference Include="Microsoft.NET.Sdk.Functions" Version="3.0.11" />
     <PackageReference Include="Box.V2.Core" Version="3.25.0" />
-    <PackageReference Include="AsyncEnumerator" Version="4.0.2" />    
+    <PackageReference Include="AsyncEnumerator" Version="4.0.2" />  
+    <PackageReference Include="Sendgrid" Version="9.22.0" />  
   </ItemGroup>
   <ItemGroup>
     <None Update="host.json">
@@ -18,8 +19,5 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>Never</CopyToPublishDirectory>
     </None>
-  </ItemGroup>
-  <ItemGroup>
-    <ProjectReference Include="..\api\box-migration-automation.csproj" />
-  </ItemGroup>
+  </ItemGroup>  
 </Project>

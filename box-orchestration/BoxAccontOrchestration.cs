@@ -10,7 +10,6 @@ using Box.V2;
 using Box.V2.Config;
 using Box.V2.JWTAuth;
 using Box.V2.Models;
-using box_migration_automation;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using System;
@@ -37,9 +36,9 @@ namespace boxaccountorchestration
         public class RequestParams
         { 
             public string UserId { get; set; } 
-            public string FolderId { get; set; } = "0"; 
-            
+            public string FolderId { get; set; } = "0";        
         }
+        
         public class Folder
         { 
             public string Id { get; set; } 
@@ -65,7 +64,10 @@ namespace boxaccountorchestration
                 log.LogInformation($"Calling 'ReactivateTheUserAccount' Function...."); 
                 await context.CallActivityAsync("ReactivateTheUserAccount", data);
                 log.LogInformation($"Calling 'RollOutTheUser' Function...."); 
-                await context.CallActivityAsync("RollOutTheUser", data);  
+                await context.CallActivityAsync("RollOutTheUser", data);
+                log.LogInformation($"Calling 'SendEmail' Function...."); 
+                await context.CallActivityAsync(nameof(SendEmail), data);
+
             }
             catch(Exception ex)
             {
@@ -177,7 +179,6 @@ namespace boxaccountorchestration
                 {   try 
                     {                
                         var  (subfolders, collabs) = await context.CallSubOrchestratorAsync<(Folder[], BoxCollection<BoxCollaboration>)>("ListSubFolders", data);  //GetSubfolders(boxClient, data.FolderId, data.UserId);                    
-                        log.LogInformation($"Got the existing collabs and started removing task: for {userLogin}");
                         await RemoveCollaborationTask(log, data, boxCurrentUserClient, enterpriseUsers, collabs);
                     }
                     catch(FunctionFailedException ex)
