@@ -157,7 +157,9 @@ namespace boxaccountorchestration
 
             log.LogInformation($"The User {userLogin} found"); 
             var currentUser = await boxClient.UsersManager.GetCurrentUserInformationAsync();  //To know the current user
-            log.LogInformation($"The current user login is {currentUser.Login} and {currentUser.Name}");   
+            log.LogInformation($"The current user login is {currentUser.Login} and {currentUser.Name}"); 
+            var boxCurrentUserClient = await CreateBoxClient(currentUser.Login);
+
             // var accessibleBy = new BoxCollaborationUserRequest() { Id = currentUser.Id };
             // var collabItem = new BoxRequestEntity() { Id = data.FolderId, Type = BoxType.folder };
             // var collaborationRequest = new BoxCollaborationRequest() { AccessibleBy = accessibleBy, Item = collabItem, Role = "editor" };
@@ -167,14 +169,21 @@ namespace boxaccountorchestration
             {
                 if (data.FolderId != "0")
                 {
-                    var existingRootCollabs = await GetFolderCollaborators(boxClient, data.FolderId); //could it get all the subfolders collaborations too?
-                    await RemoveCollaborationTask(log, data, boxClient, enterpriseUsers, existingRootCollabs);
+                    var existingRootCollabs = await GetFolderCollaborators(boxCurrentUserClient, data.FolderId); //could it get all the subfolders collaborations too?
+                    log.LogInformation($"Got the existing collabs and started removing task: for {userLogin}");
+                    await RemoveCollaborationTask(log, data, boxCurrentUserClient, enterpriseUsers, existingRootCollabs);
                 }
                 else
-                {                    
-                   var  (subfolders, collabs) = await GetSubfolders(boxClient, data.FolderId, data.UserId);
-                   await RemoveCollaborationTask(log, data, boxClient, enterpriseUsers, collabs);
-
+                {   try 
+                    {                
+                        var  (subfolders, collabs) = await context.CallSubOrchestratorAsync<(Folder[], BoxCollection<BoxCollaboration>)>("ListSubFolders", data);  //GetSubfolders(boxClient, data.FolderId, data.UserId);                    
+                        log.LogInformation($"Got the existing collabs and started removing task: for {userLogin}");
+                        await RemoveCollaborationTask(log, data, boxCurrentUserClient, enterpriseUsers, collabs);
+                    }
+                    catch(FunctionFailedException ex)
+                    {
+                        log.LogInformation($"ListSubFolders - Failed to execute with error: {ex.Message} ");
+                    }
                 }
             }
             catch(Box.V2.Exceptions.BoxException ex){
@@ -239,6 +248,27 @@ namespace boxaccountorchestration
             return (subfolders, subCollabs);
         }
         
+        [FunctionName("ListSubFolders")]
+        public static async Task<(Folder[], BoxCollection<BoxCollaboration>)> GetSubfolders(
+            [OrchestrationTrigger] IDurableOrchestrationContext context, ILogger log)
+        {
+            var data = context.GetInput<RequestParams>();
+            var boxClient = await CreateBoxClient(data.UserId);
+             var items = await boxClient.FoldersManager.GetFolderItemsAsync(id: data.FolderId, limit: 1000, offset: 0, fields: new[] { "id", "name", "owned_by" }, autoPaginate: true);            
+                
+            var subfolders = items.Entries
+                .Where(i => i.Type == "folder")
+                .Where(i => i.OwnedBy?.Id == data.UserId)                            
+                .Select(f => new Folder { Id = f.Id})                             
+                .ToArray();           
+            //await subfolders.ParallelForEachAsync(f => GetSubfolders(boxClient, f.Id, data.UserId)); 
+            BoxCollection<BoxCollaboration> subCollabs = new BoxCollection<BoxCollaboration>();
+            foreach(var folder in subfolders)
+            {
+               subCollabs = await GetFolderCollaborators(boxClient, folder.Id);
+            }
+            return (subfolders, subCollabs);
+        }
         
         private static async Task<BoxClient> CreateBoxClient (string UserId) 
         {
