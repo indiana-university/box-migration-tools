@@ -4,14 +4,11 @@ using System.Threading.Tasks;
 using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.DurableTask;
 using Microsoft.Azure.WebJobs.Extensions.Http;
-using Microsoft.Azure.WebJobs.Host;
 using Microsoft.Extensions.Logging;
 using Box.V2;
 using Box.V2.Config;
 using Box.V2.JWTAuth;
 using Box.V2.Models;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc;
 using System;
 using System.Linq;
 using Dasync.Collections;
@@ -38,6 +35,11 @@ namespace boxaccountorchestration
             public string UserId { get; set; } 
             public string FolderId { get; set; } = "0";        
         }
+        public class CollabParams
+        { 
+            public string UserId { get; set; } 
+            public string CollabId { get; set; }        
+        }
         
         public class Folder
         { 
@@ -60,7 +62,7 @@ namespace boxaccountorchestration
                 log.LogInformation($"Calling 'TraverseCollabs' Function...."); 
                 await context.CallSubOrchestratorAsync("TraverseCollabs", data);
                 log.LogInformation($"Calling 'DeleteUserData' Function...."); 
-                await context.CallSubOrchestratorAsync("DeleteUserData", data);
+                await context.CallActivityAsync("DeleteUserData", data);
                 log.LogInformation($"Calling 'ReactivateTheUserAccount' Function...."); 
                 await context.CallActivityAsync("ReactivateTheUserAccount", data);
                 log.LogInformation($"Calling 'RollOutTheUser' Function...."); 
@@ -94,7 +96,17 @@ namespace boxaccountorchestration
 
             return starter.CreateCheckStatusResponse(req, instanceId);
         }
-        
+
+        [FunctionName("RemoveCollab")]
+        public static async Task RemoveCollab([ActivityTrigger] IDurableActivityContext context, ILogger log)
+        {
+            log.LogInformation($"Start 'RemoveCollab' Function...."); 
+            var data =  context.GetInput<CollabParams>();     
+            log.LogInformation($"UserId is: {data.UserId}"); // UserId has value ?       
+            var boxClient = await CreateBoxClient(data.UserId);             
+            await boxClient.CollaborationsManager.RemoveCollaborationAsync(data.CollabId);           
+            log.LogInformation($"Removed Collaboration for {data.UserId}");
+        }
         [FunctionName("RollOutTheUser")]
         public static async Task RollOutTheUser([ActivityTrigger] IDurableActivityContext context, ILogger log)
         {
@@ -159,27 +171,21 @@ namespace boxaccountorchestration
 
             log.LogInformation($"The User {userLogin} found"); 
             var currentUser = await boxClient.UsersManager.GetCurrentUserInformationAsync();  //To know the current user
-            log.LogInformation($"The current user login is {currentUser.Login} and {currentUser.Name}"); 
-            var boxCurrentUserClient = await CreateBoxClient(currentUser.Login);
-
-            // var accessibleBy = new BoxCollaborationUserRequest() { Id = currentUser.Id };
-            // var collabItem = new BoxRequestEntity() { Id = data.FolderId, Type = BoxType.folder };
-            // var collaborationRequest = new BoxCollaborationRequest() { AccessibleBy = accessibleBy, Item = collabItem, Role = "editor" };
-            // await boxClient.CollaborationsManager.AddCollaborationAsync(collaborationRequest, notify: false);           
+            log.LogInformation($"The current user login is {currentUser.Login} and {currentUser.Name}");             
 
             try
             {
                 if (data.FolderId != "0")
                 {
-                    var existingRootCollabs = await GetFolderCollaborators(boxCurrentUserClient, data.FolderId); //could it get all the subfolders collaborations too?
+                    var existingRootCollabs = await GetFolderCollaborators(boxClient, data.FolderId); //could it get all the subfolders collaborations too?
                     log.LogInformation($"Got the existing collabs and started removing task: for {userLogin}");
-                    await RemoveCollaborationTask(log, data, boxCurrentUserClient, enterpriseUsers, existingRootCollabs);
+                    await RemoveCollaborationTask(context, log, data, boxClient, enterpriseUsers, existingRootCollabs);
                 }
                 else
                 {   try 
                     {                
                         var  (subfolders, collabs) = await context.CallSubOrchestratorAsync<(Folder[], BoxCollection<BoxCollaboration>)>("ListSubFolders", data);  //GetSubfolders(boxClient, data.FolderId, data.UserId);                    
-                        await RemoveCollaborationTask(log, data, boxCurrentUserClient, enterpriseUsers, collabs);
+                        await RemoveCollaborationTask(context, log, data, boxClient, enterpriseUsers, collabs);
                     }
                     catch(FunctionFailedException ex)
                     {
@@ -192,7 +198,7 @@ namespace boxaccountorchestration
             }
         }
 
-        private static async Task RemoveCollaborationTask(ILogger log, RequestParams data, BoxClient boxClient, Task<BoxCollection<BoxUser>> enterpriseUsers, BoxCollection<BoxCollaboration> existingFolderCollabs)
+        private static async Task RemoveCollaborationTask(IDurableOrchestrationContext context, ILogger log, RequestParams data, BoxClient boxClient, Task<BoxCollection<BoxUser>> enterpriseUsers, BoxCollection<BoxCollaboration> existingFolderCollabs)
         {
             try
             {
@@ -202,7 +208,7 @@ namespace boxaccountorchestration
                 var collabRemoveTasks = new List<Task>();
                 foreach (var collab in folderCollabs)
                 {
-                    var removeTask = boxClient.CollaborationsManager.RemoveCollaborationAsync(collab.Id);
+                    var removeTask = context.CallActivityAsync("RemoceCollab", collab.Id);//boxClient.CollaborationsManager.RemoveCollaborationAsync(collab.Id);
                     collabRemoveTasks.Add(removeTask);
                 }
                 await Task.WhenAll(collabRemoveTasks);
