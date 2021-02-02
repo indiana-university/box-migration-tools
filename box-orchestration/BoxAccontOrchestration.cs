@@ -101,19 +101,19 @@ namespace boxaccountorchestration
         public static async Task RemoveCollab([ActivityTrigger] IDurableActivityContext context, ILogger log)
         {
             log.LogInformation($"Start 'RemoveCollab' Function...."); 
-            var data =  context.GetInput<CollabParams>();     
-            log.LogInformation($"UserId is: {data.UserId}"); // UserId has value ?       
-            var boxClient = await CreateBoxClient(data.UserId);             
-            await boxClient.CollaborationsManager.RemoveCollaborationAsync(data.CollabId);           
-            log.LogInformation($"Removed Collaboration for {data.UserId}");
+              var collabData =  context.GetInput<CollabParams>();     
+            log.LogInformation($"Collab UserId is: {collabData.UserId}"); // UserId has value ?      
+            var boxClient = await CreateBoxClient(collabData.UserId);             
+            await boxClient.CollaborationsManager.RemoveCollaborationAsync(collabData.CollabId);           
+            log.LogInformation($"Removed Collaboration for {collabData.UserId}");
         }
+
         [FunctionName("RollOutTheUser")]
         public static async Task RollOutTheUser([ActivityTrigger] IDurableActivityContext context, ILogger log)
         {
             log.LogInformation($"Start 'RollOutTheUser' Function...."); 
             var data =  context.GetInput<RequestParams>();
             var boxClient = await CreateBoxClient(data.UserId); 
-            
             await boxClient.UsersManager.UpdateUserInformationAsync(new BoxUserRequest()
             {
                 Id = data.UserId,
@@ -162,9 +162,9 @@ namespace boxaccountorchestration
         public static async Task TraverseCollbs(
             [OrchestrationTrigger] IDurableOrchestrationContext context, ILogger log)
         {
-            log.LogInformation($"Start 'TraverseCollabs' Function....");
+            log.LogInformation($"Start 'TraverseCollabs' Function....");          
             var data = context.GetInput<RequestParams>();
-            log.LogInformation($"The data values are: {data.UserId}, {data.FolderId}");
+            log.LogInformation($"The Request Params values are: {data.UserId}, {data.FolderId}");
             var boxClient = await CreateBoxClient(data.UserId);
             var enterpriseUsers = GetUser(data.UserId, boxClient);
             var userLogin = enterpriseUsers.Result.Entries.Select(u=>u.Login).FirstOrDefault();           
@@ -189,7 +189,7 @@ namespace boxaccountorchestration
                     }
                     catch(FunctionFailedException ex)
                     {
-                        log.LogInformation($"ListSubFolders - Failed to execute with error: {ex.Message} ");
+                        log.LogInformation($"ListSubFolders - Failed execution with error: {ex.Message} ");
                     }
                 }
             }
@@ -208,7 +208,7 @@ namespace boxaccountorchestration
                 var collabRemoveTasks = new List<Task>();
                 foreach (var collab in folderCollabs)
                 {
-                    var removeTask = context.CallActivityAsync("RemoceCollab", collab.Id);//boxClient.CollaborationsManager.RemoveCollaborationAsync(collab.Id);
+                    var removeTask = context.CallActivityAsync("RemoveCollab", collab.Id);//boxClient.CollaborationsManager.RemoveCollaborationAsync(collab.Id);
                     collabRemoveTasks.Add(removeTask);
                 }
                 await Task.WhenAll(collabRemoveTasks);
@@ -233,47 +233,30 @@ namespace boxaccountorchestration
             }
 
             return enterpriseUsers;
-        }      
-        
-        
-        private static async Task<(Folder[], BoxCollection<BoxCollaboration>)> GetSubfolders(BoxClient boxClient, string folderId, string userId)
-        {
-            var items = await boxClient.FoldersManager.GetFolderItemsAsync(id: folderId, limit: 1000, offset: 0, fields: new[] { "id", "name", "owned_by" }, autoPaginate: true);            
-                
-            var subfolders = items.Entries
-                .Where(i => i.Type == "folder")
-                .Where(i => i.OwnedBy?.Id == userId)                            
-                .Select(f => new Folder { Id = f.Id})                             
-                .ToArray();           
-            await subfolders.ParallelForEachAsync(f => GetSubfolders(boxClient, f.Id, userId)); 
-            BoxCollection<BoxCollaboration> subCollabs = new BoxCollection<BoxCollaboration>();
-            foreach(var folder in subfolders)
-            {
-               subCollabs = await GetFolderCollaborators(boxClient, folder.Id);            
-
-            }
-            return (subfolders, subCollabs);
         }
         
         [FunctionName("ListSubFolders")]
         public static async Task<(Folder[], BoxCollection<BoxCollaboration>)> GetSubfolders(
             [OrchestrationTrigger] IDurableOrchestrationContext context, ILogger log)
         {
+            log.LogInformation($"Start 'ListSubFolders' Function..........");
+
             var data = context.GetInput<RequestParams>();
             var boxClient = await CreateBoxClient(data.UserId);
-             var items = await boxClient.FoldersManager.GetFolderItemsAsync(id: data.FolderId, limit: 1000, offset: 0, fields: new[] { "id", "name", "owned_by" }, autoPaginate: true);            
+            var items = await boxClient.FoldersManager.GetFolderItemsAsync(id: data.FolderId, limit: 1000, offset: 0, fields: new[] { "id", "owned_by" }, autoPaginate: true);            
                 
             var subfolders = items.Entries
                 .Where(i => i.Type == "folder")
                 .Where(i => i.OwnedBy?.Id == data.UserId)                            
                 .Select(f => new Folder { Id = f.Id})                             
-                .ToArray();           
-            //await subfolders.ParallelForEachAsync(f => GetSubfolders(boxClient, f.Id, data.UserId)); 
+                .ToArray(); 
+
             BoxCollection<BoxCollaboration> subCollabs = new BoxCollection<BoxCollaboration>();
-            foreach(var folder in subfolders)
-            {
-               subCollabs = await GetFolderCollaborators(boxClient, folder.Id);
-            }
+                foreach(var folder in subfolders)
+                {
+                    subCollabs = await GetFolderCollaborators(boxClient, folder.Id);
+                }
+            
             return (subfolders, subCollabs);
         }
         
