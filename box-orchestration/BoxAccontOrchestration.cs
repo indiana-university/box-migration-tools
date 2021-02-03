@@ -12,11 +12,11 @@ using Box.V2.Models;
 using System;
 using System.Linq;
 using Dasync.Collections;
-
+using Microsoft.Extensions.Options;
 
 namespace boxaccountorchestration
 {
-    public static class BoxAccountOrchestration
+    public class BoxAccountOrchestration
     {
         /*
         
@@ -47,8 +47,16 @@ namespace boxaccountorchestration
         }
         public class ResponseParams 
         {
+            public string UserId { get; set; } 
+
             public Folder[] Folders { get; set; }
         }
+        private readonly IBoxAccountConfig _config;
+
+        public BoxAccountOrchestration(IOptions<BoxAccountConfig> config)
+        {
+            _config = config.Value;
+        }        
 
         [FunctionName("BoxAccountOrchestration")]
         public static async Task RunOrchestrator(
@@ -62,13 +70,13 @@ namespace boxaccountorchestration
                 log.LogInformation($"Calling 'TraverseCollabs' Function...."); 
                 await context.CallSubOrchestratorAsync("TraverseCollabs", data);
                 log.LogInformation($"Calling 'DeleteUserData' Function...."); 
-                await context.CallActivityAsync("DeleteUserData", data);
+                //await context.CallActivityAsync("DeleteUserData", data);
                 log.LogInformation($"Calling 'ReactivateTheUserAccount' Function...."); 
-                await context.CallActivityAsync("ReactivateTheUserAccount", data);
+               // await context.CallActivityAsync("ReactivateTheUserAccount", data);
                 log.LogInformation($"Calling 'RollOutTheUser' Function...."); 
-                await context.CallActivityAsync("RollOutTheUser", data);
+                //await context.CallActivityAsync("RollOutTheUser", data);
                 log.LogInformation($"Calling 'SendEmail' Function...."); 
-                await context.CallActivityAsync(nameof(SendEmail), data);
+               // await context.CallActivityAsync(nameof(SendEmail), data);
 
             }
             catch(Exception ex)
@@ -97,13 +105,26 @@ namespace boxaccountorchestration
             return starter.CreateCheckStatusResponse(req, instanceId);
         }
 
+        [FunctionName("CreateBoxAdminClient")]
+        public BoxClient CreateBoxAdminClient(
+            [OrchestrationTrigger] IDurableOrchestrationContext context,            
+            ILogger log)
+        { 
+            var data = context.GetInput<RequestParams>();
+            log.LogInformation($"Start 'CreateBoxAdminClient' Function and creating Box client...."); 
+            var config = BoxConfig.CreateFromJsonString(_config.BoxConfigJson);            
+            var auth = new BoxJWTAuth(config);
+            var userToken = auth.UserToken(data.UserId);
+            return auth.UserClient(userToken, data.UserId);  
+        } 
+
         [FunctionName("RemoveCollab")]
         public static async Task RemoveCollab([ActivityTrigger] IDurableActivityContext context, ILogger log)
         {
             log.LogInformation($"Start 'RemoveCollab' Function...."); 
               var collabData =  context.GetInput<CollabParams>();     
             log.LogInformation($"Collab UserId is: {collabData.UserId}"); // UserId has value ?      
-            var boxClient = await CreateBoxClient(collabData.UserId);             
+            var boxClient = CreateBoxClient(collabData.UserId);             
             await boxClient.CollaborationsManager.RemoveCollaborationAsync(collabData.CollabId);           
             log.LogInformation($"Removed Collaboration for {collabData.UserId}");
         }
@@ -113,7 +134,7 @@ namespace boxaccountorchestration
         {
             log.LogInformation($"Start 'RollOutTheUser' Function...."); 
             var data =  context.GetInput<RequestParams>();
-            var boxClient = await CreateBoxClient(data.UserId); 
+            var boxClient = CreateBoxClient(data.UserId); 
             await boxClient.UsersManager.UpdateUserInformationAsync(new BoxUserRequest()
             {
                 Id = data.UserId,
@@ -128,7 +149,7 @@ namespace boxaccountorchestration
         {
             log.LogInformation($"Start 'ReactivateTheUserAccount' Function...."); 
             var data =  context.GetInput<RequestParams>();
-            var boxClient = await CreateBoxClient(data.UserId); 
+            var boxClient = CreateBoxClient(data.UserId); 
             
             await boxClient.UsersManager.UpdateUserInformationAsync(new BoxUserRequest()
             {
@@ -145,7 +166,7 @@ namespace boxaccountorchestration
             log.LogInformation($"Start 'DeleteUserData' Function....");
 
             var data =  context.GetInput<RequestParams>();
-            var boxClient = await CreateBoxClient(data.UserId); 
+            var boxClient = CreateBoxClient(data.UserId); 
             var enterpriseUsers = GetUser(data.UserId, boxClient);
 
             var existingRootCollabs = await GetFolderCollaborators(boxClient, data.FolderId);
@@ -165,7 +186,7 @@ namespace boxaccountorchestration
             log.LogInformation($"Start 'TraverseCollabs' Function....");          
             var data = context.GetInput<RequestParams>();
             log.LogInformation($"The Request Params values are: {data.UserId}, {data.FolderId}");
-            var boxClient = await CreateBoxClient(data.UserId);
+            var boxClient = await context.CallSubOrchestratorAsync<BoxClient>("CreateBoxAdminClient", data);
             var enterpriseUsers = GetUser(data.UserId, boxClient);
             var userLogin = enterpriseUsers.Result.Entries.Select(u=>u.Login).FirstOrDefault();           
 
@@ -177,15 +198,38 @@ namespace boxaccountorchestration
             {
                 if (data.FolderId != "0")
                 {
-                    var existingRootCollabs = await GetFolderCollaborators(boxClient, data.FolderId); //could it get all the subfolders collaborations too?
-                    log.LogInformation($"Got the existing collabs and started removing task: for {userLogin}");
-                    await RemoveCollaborationTask(context, log, data, boxClient, enterpriseUsers, existingRootCollabs);
+                    var existingCollabs = await GetFolderCollaborators(boxClient, data.FolderId); //this is just to test a single folder.
+                    log.LogInformation($"Got the existing collabs and started removing task: for {currentUser.Login}");
+                    //await RemoveCollaborationTask(context, log, data, boxClient, enterpriseUsers, existingCollabs);
                 }
                 else
                 {   try 
                     {                
-                        var  (subfolders, collabs) = await context.CallSubOrchestratorAsync<(Folder[], BoxCollection<BoxCollaboration>)>("ListSubFolders", data);  //GetSubfolders(boxClient, data.FolderId, data.UserId);                    
-                        await RemoveCollaborationTask(context, log, data, boxClient, enterpriseUsers, collabs);
+                        var subfolders = await context.CallSubOrchestratorAsync<List<Folder>>("ListSubFolders", data);  
+                        var existingFolderCollabs = await context.CallSubOrchestratorAsync<BoxCollection<BoxCollaboration>>("GetFolderCollaborators", subfolders);
+                        //log.LogInformation($"The Sub Folders Count: {subfolders.Result.Count()}"); 
+                        //log.LogInformation($"The Collabs Count: {collabs.Result.Entries.Count()} and {collabs.Result.TotalCount}"); 
+                        log.LogInformation($"Got the existing collabs and started removing task: for {currentUser.Login}");
+
+                        try
+            {
+                var folderCollabs = existingFolderCollabs.Entries
+                            .Where(c => c.CreatedBy.Login == data.UserId && enterpriseUsers.Result.Entries.Any(u => u.Enterprise.Name == c.CreatedBy.Enterprise.Name))
+                            .Where(c => c.AccessibleBy != null && c.AccessibleBy.Id == data.UserId);
+                var collabRemoveTasks = new List<Task>();
+                foreach (var collab in folderCollabs)
+                {
+                    log.LogInformation($"Ready to remove?");
+                    //var removeTask = context.CallActivityAsync("RemoveCollab", collab.Id); //boxClient.CollaborationsManager.RemoveCollaborationAsync(collab.Id);
+                    //collabRemoveTasks.Add(removeTask);
+                }
+                await Task.WhenAll(collabRemoveTasks);
+                log.LogInformation($"Remove the collaborations for account {data.UserId}.");
+            }
+            catch (Exception ex)
+            {
+                log.LogInformation($"The folder is not IU Owned: {ex}");
+            }
                     }
                     catch(FunctionFailedException ex)
                     {
@@ -198,6 +242,42 @@ namespace boxaccountorchestration
             }
         }
 
+        [FunctionName("ListSubFolders")]
+        public static async Task<Folder[]> GetSubfolders([OrchestrationTrigger] IDurableOrchestrationContext context, ILogger log)
+            
+        {
+            log.LogInformation($"Start 'ListSubFolders' Function..........");
+
+            var data = context.GetInput<RequestParams>();
+            var boxClient = await context.CallSubOrchestratorAsync<BoxClient>("CreateBoxAdminClient", data);
+
+            var items = await boxClient.FoldersManager.GetFolderItemsAsync(id: data.FolderId, limit: 1000, offset: 0, fields: new[] { "id", "owned_by" }, autoPaginate: true);            
+            System.Console.WriteLine($"items count:{items.Entries.Count}");
+            var subfolders = items.Entries
+                .Where(i => i.Type == "folder")
+                .Where(i => i.OwnedBy?.Id == data.UserId)                            
+                .Select(f => new Folder { Id = f.Id})                             
+                .ToArray();
+
+           //var collabs = await context.CallActivityAsync<BoxCollection<BoxCollaboration>>("GetFolderCollaborators", subfolders);
+            return subfolders;
+
+        }
+        
+        [FunctionName("GetFolderCollaborators")]
+        public static async Task<BoxCollection<BoxCollaboration>> GetFolderCollaborators([OrchestrationTrigger] IDurableOrchestrationContext context, ILogger log)
+        {
+            log.LogInformation($"Start 'GetFolderCollaborators' Function....");
+            var data = context.GetInput<ResponseParams>();
+            var boxClient = await context.CallSubOrchestratorAsync<BoxClient>("CreateBoxAdminClient", data);          
+            BoxCollection<BoxCollaboration> collabs = new BoxCollection<BoxCollaboration>();
+            foreach(var folder in data.Folders)
+            {
+                collabs = await boxClient.FoldersManager.GetCollaborationsAsync(folder.Id);//await GetFolderCollaborators(boxClient, folder.Id);
+            }
+            return collabs;
+        }
+
         private static async Task RemoveCollaborationTask(IDurableOrchestrationContext context, ILogger log, RequestParams data, BoxClient boxClient, Task<BoxCollection<BoxUser>> enterpriseUsers, BoxCollection<BoxCollaboration> existingFolderCollabs)
         {
             try
@@ -208,8 +288,9 @@ namespace boxaccountorchestration
                 var collabRemoveTasks = new List<Task>();
                 foreach (var collab in folderCollabs)
                 {
-                    var removeTask = context.CallActivityAsync("RemoveCollab", collab.Id);//boxClient.CollaborationsManager.RemoveCollaborationAsync(collab.Id);
-                    collabRemoveTasks.Add(removeTask);
+                    log.LogInformation($"Ready to remove?");
+                    //var removeTask = context.CallActivityAsync("RemoveCollab", collab.Id); //boxClient.CollaborationsManager.RemoveCollaborationAsync(collab.Id);
+                    //collabRemoveTasks.Add(removeTask);
                 }
                 await Task.WhenAll(collabRemoveTasks);
                 log.LogInformation($"Remove the collaborations for account {data.UserId}.");
@@ -234,55 +315,41 @@ namespace boxaccountorchestration
 
             return enterpriseUsers;
         }
-        
-        [FunctionName("ListSubFolders")]
-        public static async Task<(Folder[], BoxCollection<BoxCollaboration>)> GetSubfolders(
-            [OrchestrationTrigger] IDurableOrchestrationContext context, ILogger log)
-        {
-            log.LogInformation($"Start 'ListSubFolders' Function..........");
 
-            var data = context.GetInput<RequestParams>();
-            var boxClient = await CreateBoxClient(data.UserId);
-            var items = await boxClient.FoldersManager.GetFolderItemsAsync(id: data.FolderId, limit: 1000, offset: 0, fields: new[] { "id", "owned_by" }, autoPaginate: true);            
-                
+        private static async Task<Folder[]> GetSubfolders(BoxClient boxClient, string folderId, string userId)
+        {
+            var items = await boxClient.FoldersManager.GetFolderItemsAsync(id: folderId, limit: 1000, offset: 0, fields: new[] { "id", "name", "owned_by" }, autoPaginate: true);            
+            System.Console.WriteLine($"items count:{items.Entries.Count}");
             var subfolders = items.Entries
                 .Where(i => i.Type == "folder")
-                .Where(i => i.OwnedBy?.Id == data.UserId)                            
+                .Where(i => i.OwnedBy?.Id == userId)                            
                 .Select(f => new Folder { Id = f.Id})                             
-                .ToArray(); 
+                .ToArray();
 
-            BoxCollection<BoxCollaboration> subCollabs = new BoxCollection<BoxCollaboration>();
-                foreach(var folder in subfolders)
-                {
-                    subCollabs = await GetFolderCollaborators(boxClient, folder.Id);
-                }
-            
-            return (subfolders, subCollabs);
-        }
+            return subfolders;
+        } 
         
-        private static async Task<BoxClient> CreateBoxClient (string UserId) 
+        private static BoxClient CreateBoxClient (string UserId) 
         {
-            return await Task.Run(() =>
-            {
-                var configJson = Env("BoxConfigJson");                
-                Console.WriteLine("Creating Box admin client...");
-                var config = BoxConfig.CreateFromJsonString(configJson);
-                var auth = new BoxJWTAuth(config);
-                var adminToken = auth.AdminToken();
-                return auth.AdminClient(adminToken); 
-            });
+           
+            var configJson = System.Environment.GetEnvironmentVariable("BoxConfigJson");                
+            Console.WriteLine("Creating Box admin client...");
+            var config = BoxConfig.CreateFromJsonString(configJson);
+            var auth = new BoxJWTAuth(config);
+            var adminToken = auth.AdminToken();
+            return auth.AdminClient(adminToken); 
+         
         }
-        public static async Task<BoxClient> CreateBoxUserClient( string userId)
+        public static BoxClient CreateBoxUserClient( string userId)
         {
-            return await Task.Run(() =>
-            {
-                var configJson = Env("BoxConfigJson");                
-                Console.WriteLine("Creating Box user client...");
-                var config = BoxConfig.CreateFromJsonString(configJson);
-                var auth = new BoxJWTAuth(config);
-                var userToken = auth.UserToken(userId);
-                return auth.UserClient(userToken, userId);
-            });
+           
+            var configJson = Env("BoxConfigJson");                
+            Console.WriteLine("Creating Box user client...");
+            var config = BoxConfig.CreateFromJsonString(configJson);
+            var auth = new BoxJWTAuth(config);
+            var userToken = auth.UserToken(userId);
+            return auth.UserClient(userToken, userId);
+            
         }
         public static string Env(string key)
             => string.IsNullOrWhiteSpace(key)
