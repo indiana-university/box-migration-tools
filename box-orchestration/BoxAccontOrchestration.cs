@@ -156,6 +156,7 @@ namespace boxaccountorchestration
             // get a box client for args.UserId
             var boxClient = CreateBoxUserClient(args.UserId);
             var enterpriseUser = GetUser(args.UserId, boxClient);
+            log.LogInformation($"current user: {enterpriseUser.Result.Id},{enterpriseUser.Result.Login}");
             
             // list items in account root
             var items = await boxClient.FoldersManager.GetFolderItemsAsync(id: "0", limit: 1000, offset: 0, fields: new[] { "id", "owned_by" }, autoPaginate: true);            
@@ -180,14 +181,14 @@ namespace boxaccountorchestration
                 log.LogInformation($"count of collabs:{existingCollabs.Count}");           
                 var listOfCollabs = existingCollabs
                         .Where(c => c.Item != null && c.Item.Id == item.Id && c.Item.OwnedBy != item.OwnedBy)
-                        .Where(c => c.Item.CreatedBy != item.CreatedBy &&  enterpriseUser.Result.Enterprise != c.Item.CreatedBy.Enterprise)
-                        .Where(c => c.AccessibleBy != null && c.AccessibleBy.Id == args.UserId)
-                        .Select(c => new ItemParams { ItemId = c.Item.Id, UserId = c.CreatedBy.Login}).ToList();
-                
+                        .Where(c => c.CreatedBy != item.CreatedBy && enterpriseUser.Result.Enterprise != c.CreatedBy.Enterprise)
+                        .Where(c => c.AccessibleBy != null && c.AccessibleBy.Id == enterpriseUser.Result.Id)
+                        .Select(c => new ItemParams { UserId = args.UserId, ItemId = c.Item.Id}).ToList();                
                 itemsParams.AddRange(listOfCollabs);
             log.LogInformation($"count of collaborations:{listOfCollabs.Count}");
 
             }
+            log.LogInformation($"count of collaborations:{itemsParams.Count}");
             return itemsParams;
         }
 
