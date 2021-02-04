@@ -90,6 +90,9 @@ namespace boxaccountorchestration
             
             var requestParams =  context.GetInput<RequestParams>();     
 
+            // Fetch user account id by login/email
+            requestParams.UserId = await context.CallActivityAsync<string>(
+                nameof(UserAccountId), requestParams);
 
             // Generate list of collaborations to remove
             var itemsToProcess = await context.CallActivityAsync<IEnumerable<ItemParams>>(
@@ -115,8 +118,23 @@ namespace boxaccountorchestration
             
         }  
 
+        [FunctionName(nameof(UserAccountId))]
+        public async Task<string> UserAccountId([ActivityTrigger] IDurableActivityContext context, ILogger log)
         {
+            var args = context.GetInput<RequestParams>();
+            var boxClient = CreateBoxAdminClient();
+            var users = await boxClient.UsersManager.GetEnterpriseUsersAsync(filterTerm: args.UserEmail);
+            if(users.Entries.Count > 1)
             {
+                throw new Exception($" More than one user found with {args.UserEmail}");
+            }
+            else if(users.Entries.Count == 0)
+            {
+                throw new Exception($" No user found with {args.UserEmail}");              
+            }
+            else
+            {
+                return users.Entries.Select(u => u.Id).First();
             }
         }
 
