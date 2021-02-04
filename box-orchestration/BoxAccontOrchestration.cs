@@ -34,24 +34,29 @@ namespace boxaccountorchestration
         { 
             public string UserId { get; set; } 
             public string UserEmail { get; set; }
-            // public string FolderId { get; set; } = "0";        
+                 
         }
         public class ItemParams
         { 
+            public ItemParams(){}
+            public ItemParams(string userId, string itemId, string itemType, string itemName)
+            {
+                UserId = userId;
+                ItemId = itemId;
+                ItemType = itemType;
+                ItemName = itemName;
+            }
             public string UserId { get; set; } 
-            public string ItemId { get; set; }        
+            public string ItemId { get; set; }    
+            public string ItemType { get; set; }
+            public string ItemName { get; set; } 
         }
         
         public class Folder
         { 
             public string Id { get; set; } 
         }
-        public class ResponseParams 
-        {
-            public string UserId { get; set; } 
 
-            public Folder[] Folders { get; set; }
-        }
         private readonly IBoxAccountConfig _config;
 
         public BoxAccountOrchestration(IOptions<BoxAccountConfig> config)
@@ -83,61 +88,24 @@ namespace boxaccountorchestration
             ILogger log)
         { 
             
-            /* TODO
-                fan-out activities to delete each collaboration
-                activity to generate list of files to remove
-                fan-out activities to delete each file
-                activity to generate list of folders to remove
-                fan-out activities to delete each folder
-                activity to reactivate account
-                activity to roll user out of enterprise
-                activity to send email
-            */
-
-            /* Fan-out/Fan-in Pattern
-            object[] workBatch = await context.CallActivityAsync<object[]>("F1", null);
-            for (int i = 0; i < workBatch.Length; i++)
-            {
-                Task<int> task = context.CallActivityAsync<int>("F2", workBatch[i]);
-                parallelTasks.Add(task);
-            }
-
-            await Task.WhenAll(parallelTasks);
-            */
             var requestParams =  context.GetInput<RequestParams>();     
 
+
             // Generate list of collaborations to remove
-            var listOfCollabsToRemove = await context.CallActivityAsync<IEnumerable<ItemParams>>(
-                nameof(GetListOfCollaborationIdsToRemove), requestParams);
+            var itemsToProcess = await context.CallActivityAsync<IEnumerable<ItemParams>>(
+                nameof(GetBoxItemsToProcess), requestParams);
+
+            foreach(var item in itemsToProcess)
+            {
+                log.LogInformation($"[{item.UserId}] Will remove {item.ItemType} {item.ItemName} ({item.ItemId})");
+            }
 
             // // Fan-out to remove collaborations
-            // var collabRemovalTasks = listOfCollabsToRemove.Select(itemParams => 
-            //     context.CallActivityAsync(nameof(RemoveCollaboration), itemParams));
+            // var itemTasks = itemsToProcess.Select(itemParams => 
+            //     context.CallActivityAsync(nameof(ProcessItem), itemParams));
 
-            // // Fan-in to await removal of collaborations
-            // await Task.WhenAll(collabRemovalTasks);
-
-            // Generate list of folders to remove
-            var listOfFoldersToRemove = await context.CallActivityAsync<IEnumerable<ItemParams>>(
-                nameof(GetListOfFoldersToRemove), requestParams);
-
-            // // Fan-out to remove folders
-            // var folderRemovalTasks = listOfFoldersToRemove.Select(itemParams => 
-            //     context.CallActivityAsync(nameof(RemoveFolder), itemParams));
-
-            // // Fan-in to await removal of folders
-            // await Task.WhenAll(folderRemovalTasks);
-
-            // Generate list of files to remove
-            var listOfFilesToRemove = await context.CallActivityAsync<IEnumerable<ItemParams>>(
-                nameof(GetListOfFilesToRemove), requestParams);
-
-            // // Fan-out to remove files
-            // var fileRemovalTasks = listOfFilesToRemove.Select(itemParams => 
-            //     context.CallActivityAsync(nameof(RemoveFile), itemParams));
-
-            // // Fan-in to await removal of files
-            // await Task.WhenAll(fileRemovalTasks);
+            // // // Fan-in to await removal of collaborations
+            // await Task.WhenAll(itemTasks);
 
             /*
             await context.CallActivityAsync(nameof(ActivateUserAccount), requestParams);
@@ -147,164 +115,129 @@ namespace boxaccountorchestration
             
         }  
 
-        [FunctionName(nameof(GetListOfCollaborationIdsToRemove))]
-        public async Task<IEnumerable<ItemParams>> GetListOfCollaborationIdsToRemove([ActivityTrigger] IDurableActivityContext context, ILogger log)
         {
-            var args =  context.GetInput<RequestParams>();
-            log.LogInformation($"args are:{args.UserId},{args.UserEmail}");
-            
+            {
+            }
+        }
+
+        [FunctionName(nameof(GetBoxItemsToProcess))]
+        public async Task<IEnumerable<ItemParams>> GetBoxItemsToProcess([ActivityTrigger] IDurableActivityContext context, ILogger log)
+        {
+            var args = context.GetInput<RequestParams>();
+
             // get a box client for args.UserId
             var boxClient = CreateBoxUserClient(args.UserId);
-            var enterpriseUser = GetUser(args.UserId, boxClient);
-            log.LogInformation($"current user: {enterpriseUser.Result.Id},{enterpriseUser.Result.Login}");
-            
+
             // list items in account root
-            var items = await boxClient.FoldersManager.GetFolderItemsAsync(id: "0", limit: 1000, offset: 0, fields: new[] { "id", "owned_by" }, autoPaginate: true);            
-            var listOfItems = items.Entries               
-                .Where(i => i.OwnedBy.Login != args.UserId)                            
-                .ToArray();
-            
-            log.LogInformation($"count of items:{listOfItems.Count()}");
-            
+            var items = await boxClient.FoldersManager
+                .GetFolderItemsAsync(id: "0", limit: 1000, offset: 0, fields: new[] { "id", "name", "owned_by", "is_externally_owned" }, autoPaginate: true);
+
+            var ownedItems = ResolveOwnedItems(log, args, boxClient, items);
+            var internalCollabs = await ResolveInternalCollaborations(log, args, boxClient, items);
+            return ownedItems.Concat(internalCollabs).OrderBy(i => i.ItemName);
+        }
+
+        private static IEnumerable<ItemParams> ResolveOwnedItems(ILogger log, RequestParams args, BoxClient boxClient, BoxCollection<BoxItem> items)
+            => items.Entries
+                .Where(i => i.OwnedBy.Id == args.UserId)
+                .Select(i => new ItemParams(args.UserId, i.Id, i.Type, i.Name));
+
+        private static async Task<IEnumerable<ItemParams>> ResolveInternalCollaborations(ILogger log, RequestParams args, BoxClient boxClient, BoxCollection<BoxItem> items)
+        {
+            // find items for which this user is part of an internal collaboration.
+            var itemsWithDifferentOwner = items.Entries.Where(i => i.OwnedBy.Id != args.UserId);
+            var interallyCollabedFolders = itemsWithDifferentOwner
+                .Where(i => i.Type == "folder")
+                .Cast<BoxFolder>()
+                .Where(f => f.IsExternallyOwned.GetValueOrDefault(false) == false);
+            var interallyCollabedFiles = itemsWithDifferentOwner
+                .Where(i => i.Type == "file")
+                .Cast<BoxFile>()
+                .Where(f => f.IsExternallyOwned.GetValueOrDefault(false) == false);
+            var internallyCollabedItems =
+                interallyCollabedFiles.Cast<BoxItem>()
+                .Concat(interallyCollabedFolders.Cast<BoxItem>())
+                .OrderBy(i => i.Name);
+
             // find collaborations for each item
             var itemsParams = new List<ItemParams>();
-            foreach(var item in listOfItems)
+            foreach (var item in internallyCollabedItems)
             {
-               log.LogInformation($"reqs:{item.Id},{item.OwnedBy.Id},{item.OwnedBy.Login}");
-                var existingCollabs = item.Type == "file" 
+                // fetch all collaborations on this item
+                // log.LogInformation($"Fetching collabs for {item.Type} {item.Name} (id: {item.Id}");
+                var itemCollabs = item.Type == "file"
                         ? await GetFileCollaborators(boxClient, item.Id)
                         : await GetFolderCollaborators(boxClient, item.Id);
 
-                // if the collaboration was created by an external user
-                //   and the collaboration is accessible by this user
-                // then add it to the list.
-                log.LogInformation($"count of collabs:{existingCollabs.Count}");           
-                var listOfCollabs = existingCollabs
-                        .Where(c => c.Item != null && c.Item.Id == item.Id && c.Item.OwnedBy != item.OwnedBy)
-                        .Where(c => c.CreatedBy != item.CreatedBy && enterpriseUser.Result.Enterprise != c.CreatedBy.Enterprise)
-                        .Where(c => c.AccessibleBy != null && c.AccessibleBy.Id == enterpriseUser.Result.Id)
-                        .Select(c => new ItemParams { UserId = args.UserId, ItemId = c.Item.Id}).ToList();                
-                itemsParams.AddRange(listOfCollabs);
-            log.LogInformation($"count of collaborations:{listOfCollabs.Count}");
+                // find the collaboration associated with this user.
+                var userCollabs = itemCollabs
+                    .Where(c => c.AccessibleBy.Id == args.UserId)
+                    .Select(c => new ItemParams(args.UserId, c.Id, c.Type, item.Name))
+                    .ToList();
 
+                log.LogInformation($"[{args.UserId}] Found {userCollabs.Count()} internal collabs for {item.Type} {item.Name} ({item.Id})");
+
+                itemsParams.AddRange(userCollabs);
             }
-            log.LogInformation($"count of collaborations:{itemsParams.Count}");
+
             return itemsParams;
         }
 
-        [FunctionName(nameof(RemoveCollaboration))]
-        public async Task RemoveCollaboration([ActivityTrigger] IDurableActivityContext context, ILogger log)
+        [FunctionName(nameof(ProcessItem))]
+        public async Task ProcessItem([ActivityTrigger] IDurableActivityContext context, ILogger log)
         {
             var args =  context.GetInput<ItemParams>();  
-            // get a box client for args.UserId
             var boxClient = CreateBoxUserClient(args.UserId);
-            // remove collaboration with args.ItemId            
-            await boxClient.CollaborationsManager.RemoveCollaborationAsync(args.ItemId);
-        }
 
-        [FunctionName(nameof(GetListOfFoldersToRemove))]
-        public async Task<IEnumerable<ItemParams>> GetListOfFoldersToRemove([ActivityTrigger] IDurableActivityContext context, ILogger log)
-        {
-            var args =  context.GetInput<RequestParams>();     
-            // get a box client for args.UserId
-            var boxClient = CreateBoxUserClient(args.UserId);
-            
-            // list folders in account root
-            var items = await boxClient.FoldersManager.GetFolderItemsAsync(id: "0", limit: 1000, offset: 0, fields: new[] { "id", "owned_by" }, autoPaginate: true);            
-            var folders = items.Entries
-                .Where(i => i.Type == "folder")
-                .Where(i => i.OwnedBy.Login == args.UserId) 
-                .ToArray();
-            log.LogInformation($"count of folders:{folders.Count()}");
-            
-            // if folder is owned by the user, add it to list of items to remove
-            var itemsParams = new List<ItemParams>(); 
-            var listOfFolders = folders
-                    .Select(f => new ItemParams { ItemId = f.Id, UserId = f.OwnedBy.Login})                  
-                    .ToList();
-            
-            itemsParams.AddRange(listOfFolders);
-            
-            log.LogInformation($"count of folders:{listOfFolders.Count}");
-            
-            return itemsParams;
-        }
-
-        [FunctionName(nameof(RemoveFolder))]
-        public async Task RemoveFolder([ActivityTrigger] IDurableActivityContext context, ILogger log)
-        {
-            var args =  context.GetInput<ItemParams>();             
-            // get a box client for args.UserId
-            var boxClient = CreateBoxUserClient(args.UserId);
-            // remove folder with args.ItemId
-            await boxClient.FoldersManager.DeleteAsync(args.ItemId, recursive: true);
-        }
-
-        
-        [FunctionName(nameof(GetListOfFilesToRemove))]
-        public async Task<IEnumerable<ItemParams>> GetListOfFilesToRemove([ActivityTrigger] IDurableActivityContext context, ILogger log)
-        {
-            var args =  context.GetInput<RequestParams>();     
-            // get a box client for args.UserId
-            var boxClient = CreateBoxUserClient(args.UserId);
-           
-            // list files in account root
-            var items = await boxClient.FoldersManager.GetFolderItemsAsync(id: "0", limit: 1000, offset: 0, fields: new[] { "id", "owned_by" }, autoPaginate: true);            
-            var files = items.Entries
-                .Where(i => i.Type == "file")
-                .Where(i => i.OwnedBy.Login == args.UserId) 
-                .ToArray();
-
-            // if files is owned by the user, add it to list of items to remove            
-            var itemsParams = new List<ItemParams>();           
-            var listOfFiles = files
-                    .Select(f => new ItemParams { ItemId = f.Id, UserId = f.OwnedBy.Login})                  
-                    .ToList();            
-            itemsParams.AddRange(listOfFiles);
-            log.LogInformation($"count of files:{listOfFiles.Count}");
-
-            return itemsParams;
-        }
-
-        [FunctionName(nameof(RemoveFile))]
-        public async Task RemoveFile([ActivityTrigger] IDurableActivityContext context, ILogger log)
-        {
-           var args =  context.GetInput<ItemParams>();             
-            // get a box client for args.UserId
-            var boxClient = CreateBoxUserClient(args.UserId);
-            // remove file with args.ItemId
-            await boxClient.FilesManager.DeleteAsync(id: args.ItemId); 
-        }
-
-        [FunctionName(nameof(ActivateUserAccount))]
-        public async Task ActivateUserAccount([ActivityTrigger] IDurableActivityContext context, ILogger log)
-        {
-            var args =  context.GetInput<RequestParams>();
-            // get a box admin client
-            var boxClient = CreateBoxAdminClient(); 
-            
-            // set user account as active
-            await boxClient.UsersManager.UpdateUserInformationAsync(new BoxUserRequest()
+            if (args.ItemType == "file")
             {
-                Id = args.UserId,
-                Status = "active"
-            });  
-        }
-
-        [FunctionName(nameof(RollUserOutOfEnterprise))]
-        public async Task RollUserOutOfEnterprise([ActivityTrigger] IDurableActivityContext context, ILogger log)
-        {
-            var args =  context.GetInput<RequestParams>();        
-            // get a box admin client
-            var boxClient = CreateBoxAdminClient();
-            // set user enterprise to null
-            await boxClient.UsersManager.UpdateUserInformationAsync(new BoxUserRequest()
+                log.LogInformation($"[{args.UserId}] Removing file {args.ItemName} (file id: {args.ItemId})");
+                // await boxClient.FilesManager.DeleteAsync(id: args.ItemId); 
+            }
+            else if (args.ItemType == "folder")
             {
-                Id = args.UserId,
-                Enterprise = null,                
-            });
-
+                log.LogInformation($"[{args.UserId}] Removing folder {args.ItemName} (folder id: {args.ItemId})");
+                // await boxClient.FoldersManager.DeleteAsync(args.ItemId, recursive: true);
+            }
+            else if (args.ItemType == "collaboration")
+            {
+                log.LogInformation($"[{args.UserId}] Removing internal collaboration on {args.ItemName} (collab id: {args.ItemId})");
+                // await boxClient.CollaborationsManager.RemoveCollaborationAsync(args.ItemId);
+            }
+            else
+            {
+                log.LogError($"[{args.UserId}] Unrecognized item type {args.ItemType} for {args.ItemName} (item id: {args.ItemId})");
+            }
         }
+
+        // [FunctionName(nameof(ActivateUserAccount))]
+        // public async Task ActivateUserAccount([ActivityTrigger] IDurableActivityContext context, ILogger log)
+        // {
+        //     var args =  context.GetInput<RequestParams>();
+        //     // get a box admin client
+        //     var boxClient = CreateBoxAdminClient(); 
+            
+        //     // set user account as active
+        //     await boxClient.UsersManager.UpdateUserInformationAsync(new BoxUserRequest()
+        //     {
+        //         Id = args.UserId,
+        //         Status = "active"
+        //     });  
+        // }
+
+        // [FunctionName(nameof(RollUserOutOfEnterprise))]
+        // public async Task RollUserOutOfEnterprise([ActivityTrigger] IDurableActivityContext context, ILogger log)
+        // {
+        //     var args =  context.GetInput<RequestParams>();        
+        //     // get a box admin client
+        //     var boxClient = CreateBoxAdminClient();
+        //     // set user enterprise to null
+        //     await boxClient.UsersManager.UpdateUserInformationAsync(new BoxUserRequest()
+        //     {
+        //         Id = args.UserId,
+        //         Enterprise = null,                
+        //     });
+        // }
 
 
         // [FunctionName(nameof(SendUserNotification))]
@@ -330,17 +263,16 @@ namespace boxaccountorchestration
             var adminToken = auth.AdminToken();
             return auth.AdminClient(adminToken);  
         }
-        private static Task<BoxUser> GetUser(string userId, BoxClient boxClient)
-            => boxClient.UsersManager.GetCurrentUserInformationAsync(fields: new[] { "name", "login", "enterprise" });
+
         private static async Task<List<BoxCollaboration>> GetFolderCollaborators(BoxClient client, string itemId)
         {
-            var collection = await client.FoldersManager.GetCollaborationsAsync(itemId);
+            var collection = await client.FoldersManager.GetCollaborationsAsync(itemId, fields:new[]{"owned_by", "accessible_by"});
             return collection.Entries;
         }
 
         private static async Task<List<BoxCollaboration>> GetFileCollaborators(BoxClient client, string itemId)
         {
-            var collection = await client.FilesManager.GetCollaborationsCollectionAsync(itemId, autoPaginate: true);
+            var collection = await client.FilesManager.GetCollaborationsCollectionAsync(itemId, fields:new[]{"owned_by", "accessible_by"}, autoPaginate: true);
             return collection.Entries;
         }
     }
