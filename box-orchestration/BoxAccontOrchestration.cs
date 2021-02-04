@@ -11,31 +11,21 @@ using Box.V2.JWTAuth;
 using Box.V2.Models;
 using System;
 using System.Linq;
-using Dasync.Collections;
-using Microsoft.Extensions.Options;
+using SendGrid.Helpers.Mail;
+using SendGrid;
 
 namespace boxaccountorchestration
 {
-    public class BoxAccountOrchestration
+    public static class BoxAccountOrchestration
     {
-        /*
         
-            Given an IU netid:
-
-                Delete any collaborations this user has on IU-owned folders
-                Delete any data owned by this user
-                Reactive the user account (set status to 'active')
-                Roll the user out of the enterprise
-                Send user an email notifying them that their account has been reactivated.      
-        
-        
-        */
         public class RequestParams
         { 
             public string UserId { get; set; } 
             public string UserEmail { get; set; }
                  
         }
+        
         public class ItemParams
         { 
             public ItemParams(){}
@@ -51,95 +41,76 @@ namespace boxaccountorchestration
             public string ItemType { get; set; }
             public string ItemName { get; set; } 
         }
-        
-        public class Folder
-        { 
-            public string Id { get; set; } 
-        }
 
-        private readonly IBoxAccountConfig _config;
-
-        public BoxAccountOrchestration(IOptions<BoxAccountConfig> config)
-        {
-            _config = config.Value;
-        }        
-
-        [FunctionName("BoxAccountOrchestration_HttpStart")]
-        public static async Task<HttpResponseMessage> HttpStart(
+       
+        [FunctionName(nameof(MigrateToPersonalAccount))]
+        public static async Task<HttpResponseMessage> MigrateToPersonalAccount(
             [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post")] HttpRequestMessage req,
             [DurableClient] IDurableOrchestrationClient starter,
             ILogger log)
         {
             // Function input comes from the request content.    
-            log.LogInformation($"Start 'BoxAccountOrchestration_HttpStart' Function...."); 
             var data = await req.Content.ReadAsAsync<RequestParams>();
 
-            log.LogInformation($"Calling 'BoxAccountOrchestration' Function...."); 
-            string instanceId = await starter.StartNewAsync("BoxAccountOrchestration", data);
+            // resolve the username to a box account ID
+            var result = await UserAccountId(data);
 
-            log.LogInformation($"Start orchestration with ID = '{instanceId}'.");
-
-            return starter.CreateCheckStatusResponse(req, instanceId);
+            // if the username was resolved start the orchestration and return http 202 accepted
+            if (result.success)
+            {
+                log.LogInformation($"Resolved Box Account id {result.msg} for login {data.UserEmail}");
+                var args = new RequestParams(){UserId = result.msg, UserEmail=data.UserEmail};
+                var instanceId = await starter.StartNewAsync(nameof(MigrationOrchestrator), args);
+                return starter.CreateCheckStatusResponse(req, instanceId);
+            }
+            // if failed return a http 400 bad request with some error information.
+            else
+            {
+                return new HttpResponseMessage(System.Net.HttpStatusCode.BadRequest)
+                {
+                    Content = new StringContent(result.msg, System.Text.Encoding.UTF8, "text/plain"),
+                };
+            }
         }
 
-        [FunctionName("BoxAccountOrchestration")]
-        public static async Task RunOrchestrator(
+        [FunctionName(nameof(MigrationOrchestrator))]
+        public static async Task MigrationOrchestrator(
             [OrchestrationTrigger] IDurableOrchestrationContext context,            
             ILogger log)
         { 
-            
-            var requestParams =  context.GetInput<RequestParams>();     
+            var requestParams =  await Task.FromResult(context.GetInput<RequestParams>());     
 
-            // Fetch user account id by login/email
-            requestParams.UserId = await context.CallActivityAsync<string>(
-                nameof(UserAccountId), requestParams);
-
-            // Generate list of collaborations to remove
+            //Generate list of collaborations to remove
             var itemsToProcess = await context.CallActivityAsync<IEnumerable<ItemParams>>(
                 nameof(GetBoxItemsToProcess), requestParams);
 
-            foreach(var item in itemsToProcess)
-            {
-                log.LogInformation($"[{item.UserId}] Will remove {item.ItemType} {item.ItemName} ({item.ItemId})");
-            }
+           // Fan-out to remove collaborations
+            var itemTasks = itemsToProcess.Select(itemParams => 
+                context.CallActivityAsync(nameof(ProcessItem), itemParams));
 
-            // // Fan-out to remove collaborations
-            // var itemTasks = itemsToProcess.Select(itemParams => 
-            //     context.CallActivityAsync(nameof(ProcessItem), itemParams));
-
-            // // // Fan-in to await removal of collaborations
-            // await Task.WhenAll(itemTasks);
+            // // Fan-in to await removal of collaborations
+            await Task.WhenAll(itemTasks);
 
             /*
-            await context.CallActivityAsync(nameof(ActivateUserAccount), requestParams);
-            await context.CallActivityAsync(nameof(RollUserOutOfEnterprise), requestParams);
-            await context.CallActivityAsync(nameof(SendUserNotification), requestParams);
+            await context.CallActivityAsync(nameof(RollAccountOutOfEnterprise), requestParams);
             */
-            
+            await context.CallActivityAsync(nameof(SendUserNotification), requestParams);
         }  
 
-        [FunctionName(nameof(UserAccountId))]
-        public async Task<string> UserAccountId([ActivityTrigger] IDurableActivityContext context, ILogger log)
+        public static async Task<(bool success, string msg)> UserAccountId(RequestParams args)
         {
-            var args = context.GetInput<RequestParams>();
             var boxClient = CreateBoxAdminClient();
             var users = await boxClient.UsersManager.GetEnterpriseUsersAsync(filterTerm: args.UserEmail);
             if(users.Entries.Count > 1)
-            {
-                throw new Exception($" More than one user found with {args.UserEmail}");
-            }
+                return (false, $"More than one Box account found for {args.UserEmail}");
             else if(users.Entries.Count == 0)
-            {
-                throw new Exception($" No user found with {args.UserEmail}");              
-            }
+                return (false, $"No Box account was found for {args.UserEmail}");
             else
-            {
-                return users.Entries.Select(u => u.Id).First();
-            }
+                return (true, users.Entries.Single().Id);
         }
 
         [FunctionName(nameof(GetBoxItemsToProcess))]
-        public async Task<IEnumerable<ItemParams>> GetBoxItemsToProcess([ActivityTrigger] IDurableActivityContext context, ILogger log)
+        public static async Task<IEnumerable<ItemParams>> GetBoxItemsToProcess([ActivityTrigger] IDurableActivityContext context, ILogger log)
         {
             var args = context.GetInput<RequestParams>();
 
@@ -193,8 +164,6 @@ namespace boxaccountorchestration
                     .Select(c => new ItemParams(args.UserId, c.Id, c.Type, item.Name))
                     .ToList();
 
-                log.LogInformation($"[{args.UserId}] Found {userCollabs.Count()} internal collabs for {item.Type} {item.Name} ({item.Id})");
-
                 itemsParams.AddRange(userCollabs);
             }
 
@@ -202,7 +171,7 @@ namespace boxaccountorchestration
         }
 
         [FunctionName(nameof(ProcessItem))]
-        public async Task ProcessItem([ActivityTrigger] IDurableActivityContext context, ILogger log)
+        public static async Task ProcessItem([ActivityTrigger] IDurableActivityContext context, ILogger log)
         {
             var args =  context.GetInput<ItemParams>();  
             var boxClient = CreateBoxUserClient(args.UserId);
@@ -228,58 +197,56 @@ namespace boxaccountorchestration
             }
         }
 
-        // [FunctionName(nameof(ActivateUserAccount))]
-        // public async Task ActivateUserAccount([ActivityTrigger] IDurableActivityContext context, ILogger log)
-        // {
-        //     var args =  context.GetInput<RequestParams>();
-        //     // get a box admin client
-        //     var boxClient = CreateBoxAdminClient(); 
-            
-        //     // set user account as active
-        //     await boxClient.UsersManager.UpdateUserInformationAsync(new BoxUserRequest()
-        //     {
-        //         Id = args.UserId,
-        //         Status = "active"
-        //     });  
-        // }
-
-        // [FunctionName(nameof(RollUserOutOfEnterprise))]
-        // public async Task RollUserOutOfEnterprise([ActivityTrigger] IDurableActivityContext context, ILogger log)
-        // {
-        //     var args =  context.GetInput<RequestParams>();        
-        //     // get a box admin client
-        //     var boxClient = CreateBoxAdminClient();
-        //     // set user enterprise to null
-        //     await boxClient.UsersManager.UpdateUserInformationAsync(new BoxUserRequest()
-        //     {
-        //         Id = args.UserId,
-        //         Enterprise = null,                
-        //     });
-        // }
-
-
-        // [FunctionName(nameof(SendUserNotification))]
-        // public async Task SendUserNotification([ActivityTrigger] IDurableActivityContext context, ILogger log)
-        // {
-        //     var args =  context.GetInput<RequestParams>();     
-        //     // get a box admin client
-        //     var boxClient = CreateBoxAdminClient();
-        // }
-
-        public BoxClient CreateBoxUserClient(string userId)
+        [FunctionName(nameof(RollAccountOutOfEnterprise))]
+        public static async Task RollAccountOutOfEnterprise([ActivityTrigger] IDurableActivityContext context, ILogger log)
         {
-            var config = BoxConfig.CreateFromJsonString(_config.BoxConfigJson);            
-            var auth = new BoxJWTAuth(config);
+            var args =  context.GetInput<RequestParams>();
+            // get a box admin client
+            var boxClient = CreateBoxAdminClient();             
+            // set user account as active
+            log.LogInformation($"[{args.UserId}] Setting account status to 'active',");
+            await boxClient.UsersManager.UpdateUserInformationAsync(new BoxUserRequest() { Id = args.UserId, Status = "active" });  
+            // roll the user out from the enterprise
+            log.LogInformation($"[{args.UserId}] Rolling account out of enterprise.");
+            await boxClient.UsersManager.UpdateUserInformationAsync(new BoxUserRequest() { Id = args.UserId, Enterprise = null });  
+        }
+        
+        [FunctionName(nameof(SendUserNotification))]
+        public static async Task SendUserNotification([ActivityTrigger] IDurableActivityContext context, ILogger log)
+        {
+            var args =  context.GetInput<RequestParams>();
+            var apiKey = Environment.GetEnvironmentVariable("SendGridApiKey");
+            var client = new SendGridClient(apiKey);
+
+            var message = new SendGridMessage();
+            message.SetFrom(new EmailAddress("notifier@iu.edu", "Box Migration Notifications"));
+            message.AddTo(new EmailAddress(args.UserEmail));
+            message.SetSubject("IU Box account migration update");
+            message.AddContent(MimeType.Text, $@"Hello, Your IU Box account has been migrated to a personal account. 
+            Any external collaborations you may have had were preserved, but any IU-related data has been removed from your account.");
+
+            await client.SendEmailAsync(message);
+        }
+
+        public static BoxClient CreateBoxUserClient(string userId)
+        {
+            var auth = CreateBoxJwtAuth();
             var userToken = auth.UserToken(userId);
             return auth.UserClient(userToken, userId);  
         }
 
-        public BoxClient CreateBoxAdminClient()
+        public static BoxClient CreateBoxAdminClient()
         {
-            var config = BoxConfig.CreateFromJsonString(_config.BoxConfigJson);            
-            var auth = new BoxJWTAuth(config);
+            var auth = CreateBoxJwtAuth();
             var adminToken = auth.AdminToken();
             return auth.AdminClient(adminToken);  
+        }
+
+        public static BoxJWTAuth CreateBoxJwtAuth()
+        {
+            var boxConfigJson = System.Environment.GetEnvironmentVariable("BoxConfigJson");
+            var config = BoxConfig.CreateFromJsonString(boxConfigJson);            
+            return new BoxJWTAuth(config);
         }
 
         private static async Task<List<BoxCollaboration>> GetFolderCollaborators(BoxClient client, string itemId)
