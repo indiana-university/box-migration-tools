@@ -14,16 +14,21 @@ using System.Linq;
 using SendGrid.Helpers.Mail;
 using SendGrid;
 
-namespace boxaccountorchestration
+namespace box_migration_automation
 {
-    public static class BoxAccountOrchestration
+    public static class MigrateToPersonalAccount
     {
         
         public class RequestParams
         { 
+            // A Box Account login/email address
+            public string UserEmail { get; set; }                 
+        }
+
+        private class MigrationParams : RequestParams
+        {
+            // a Box Account ID
             public string UserId { get; set; } 
-            public string UserEmail { get; set; }
-                 
         }
         
         public class ItemParams
@@ -41,26 +46,25 @@ namespace boxaccountorchestration
             public string ItemType { get; set; }
             public string ItemName { get; set; } 
         }
-
        
         [FunctionName(nameof(MigrateToPersonalAccount))]
-        public static async Task<HttpResponseMessage> MigrateToPersonalAccount(
+        public static async Task<HttpResponseMessage> HttpStart(
             [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post")] HttpRequestMessage req,
             [DurableClient] IDurableOrchestrationClient starter,
             ILogger log)
         {
             // Function input comes from the request content.    
-            var data = await req.Content.ReadAsAsync<RequestParams>();
+            var args = await req.Content.ReadAsAsync<RequestParams>();
 
             // resolve the username to a box account ID
-            var result = await UserAccountId(data);
+            var result = await UserAccountId(args);
 
             // if the username was resolved start the orchestration and return http 202 accepted
             if (result.success)
             {
-                log.LogInformation($"Resolved Box Account id {result.msg} for login {data.UserEmail}");
-                var args = new RequestParams(){UserId = result.msg, UserEmail=data.UserEmail};
-                var instanceId = await starter.StartNewAsync(nameof(MigrationOrchestrator), args);
+                log.LogInformation($"Resolved Box Account id {result.msg} for login {args.UserEmail}");
+                var migrationParams = new MigrationParams(){UserId = result.msg, UserEmail=args.UserEmail};
+                var instanceId = await starter.StartNewAsync(nameof(MigrationOrchestrator), migrationParams);
                 return starter.CreateCheckStatusResponse(req, instanceId);
             }
             // if failed return a http 400 bad request with some error information.
@@ -78,11 +82,11 @@ namespace boxaccountorchestration
             [OrchestrationTrigger] IDurableOrchestrationContext context,            
             ILogger log)
         { 
-            var requestParams =  await Task.FromResult(context.GetInput<RequestParams>());     
+            var args =  await Task.FromResult(context.GetInput<MigrationParams>());     
 
             //Generate list of collaborations to remove
             var itemsToProcess = await context.CallActivityAsync<IEnumerable<ItemParams>>(
-                nameof(GetBoxItemsToProcess), requestParams);
+                nameof(GetBoxItemsToProcess), args);
 
            // Fan-out to remove collaborations
             var itemTasks = itemsToProcess.Select(itemParams => 
@@ -94,7 +98,7 @@ namespace boxaccountorchestration
             /*
             await context.CallActivityAsync(nameof(RollAccountOutOfEnterprise), requestParams);
             */
-            await context.CallActivityAsync(nameof(SendUserNotification), requestParams);
+            await context.CallActivityAsync(nameof(SendUserNotification), args);
         }  
 
         public static async Task<(bool success, string msg)> UserAccountId(RequestParams args)
@@ -112,7 +116,7 @@ namespace boxaccountorchestration
         [FunctionName(nameof(GetBoxItemsToProcess))]
         public static async Task<IEnumerable<ItemParams>> GetBoxItemsToProcess([ActivityTrigger] IDurableActivityContext context, ILogger log)
         {
-            var args = context.GetInput<RequestParams>();
+            var args = context.GetInput<MigrationParams>();
 
             // get a box client for args.UserId
             var boxClient = CreateBoxUserClient(args.UserId);
@@ -126,12 +130,12 @@ namespace boxaccountorchestration
             return ownedItems.Concat(internalCollabs).OrderBy(i => i.ItemName);
         }
 
-        private static IEnumerable<ItemParams> ResolveOwnedItems(ILogger log, RequestParams args, BoxClient boxClient, BoxCollection<BoxItem> items)
+        private static IEnumerable<ItemParams> ResolveOwnedItems(ILogger log, MigrationParams args, BoxClient boxClient, BoxCollection<BoxItem> items)
             => items.Entries
                 .Where(i => i.OwnedBy.Id == args.UserId)
                 .Select(i => new ItemParams(args.UserId, i.Id, i.Type, i.Name));
 
-        private static async Task<IEnumerable<ItemParams>> ResolveInternalCollaborations(ILogger log, RequestParams args, BoxClient boxClient, BoxCollection<BoxItem> items)
+        private static async Task<IEnumerable<ItemParams>> ResolveInternalCollaborations(ILogger log, MigrationParams args, BoxClient boxClient, BoxCollection<BoxItem> items)
         {
             // find items for which this user is part of an internal collaboration.
             var itemsWithDifferentOwner = items.Entries.Where(i => i.OwnedBy.Id != args.UserId);
@@ -200,7 +204,7 @@ namespace boxaccountorchestration
         [FunctionName(nameof(RollAccountOutOfEnterprise))]
         public static async Task RollAccountOutOfEnterprise([ActivityTrigger] IDurableActivityContext context, ILogger log)
         {
-            var args =  context.GetInput<RequestParams>();
+            var args =  context.GetInput<MigrationParams>();
             // get a box admin client
             var boxClient = CreateBoxAdminClient();             
             // set user account as active
@@ -214,16 +218,17 @@ namespace boxaccountorchestration
         [FunctionName(nameof(SendUserNotification))]
         public static async Task SendUserNotification([ActivityTrigger] IDurableActivityContext context, ILogger log)
         {
-            var args =  context.GetInput<RequestParams>();
+            var args =  context.GetInput<MigrationParams>();
             var apiKey = Environment.GetEnvironmentVariable("SendGridApiKey");
+            var fromAddress = Environment.GetEnvironmentVariable("MigrationNotificationFromAddress");
             var client = new SendGridClient(apiKey);
 
             var message = new SendGridMessage();
-            message.SetFrom(new EmailAddress("notifier@iu.edu", "Box Migration Notifications"));
+            message.SetFrom(new EmailAddress(fromAddress, "Box Migration Notifications"));
             message.AddTo(new EmailAddress(args.UserEmail));
-            message.SetSubject("IU Box account migration update");
-            message.AddContent(MimeType.Text, $@"Hello, Your IU Box account has been migrated to a personal account. 
-            Any external collaborations you may have had were preserved, but any IU-related data has been removed from your account.");
+            message.SetSubject("Box account migration update");
+            message.AddContent(MimeType.Text, $@"Hello, Your Box account has been migrated to a personal account. 
+            Any external collaborations you may have had were preserved, but any university-related data has been removed from your account.");
 
             await client.SendEmailAsync(message);
         }
