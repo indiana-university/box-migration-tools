@@ -16,9 +16,8 @@ using SendGrid;
 
 namespace box_migration_automation
 {
-    public static class MigrateToPersonalAccount
+    public static class AccountMigration    
     {
-        
         public class RequestParams
         { 
             // A Box Account login/email address
@@ -48,7 +47,7 @@ namespace box_migration_automation
         }
        
         [FunctionName(nameof(MigrateToPersonalAccount))]
-        public static async Task<HttpResponseMessage> HttpStart(
+        public static async Task<HttpResponseMessage> MigrateToPersonalAccount(
             [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post")] HttpRequestMessage req,
             [DurableClient] IDurableOrchestrationClient starter,
             ILogger log)
@@ -95,9 +94,7 @@ namespace box_migration_automation
             // // Fan-in to await removal of collaborations
             await Task.WhenAll(itemTasks);
 
-            /*
-            await context.CallActivityAsync(nameof(RollAccountOutOfEnterprise), requestParams);
-            */
+            // await context.CallActivityAsync(nameof(RollAccountOutOfEnterprise), args);
             await context.CallActivityAsync(nameof(SendUserNotification), args);
         }  
 
