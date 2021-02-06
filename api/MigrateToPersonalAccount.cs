@@ -13,6 +13,7 @@ using System;
 using System.Linq;
 using SendGrid.Helpers.Mail;
 using SendGrid;
+using Dasync.Collections;
 
 namespace box_migration_automation
 {
@@ -38,7 +39,7 @@ namespace box_migration_automation
                 UserId = userId;
                 ItemId = itemId;
                 ItemType = itemType;
-                ItemName = itemName;
+                ItemName = itemName;                
             }
             public string UserId { get; set; } 
             public string ItemId { get; set; }    
@@ -95,7 +96,7 @@ namespace box_migration_automation
             await Task.WhenAll(itemTasks);
 
             // await context.CallActivityAsync(nameof(RollAccountOutOfEnterprise), args);
-            await context.CallActivityAsync(nameof(SendUserNotification), args);
+           // await context.CallActivityAsync(nameof(SendUserNotification), args);
         }  
 
         public static async Task<(bool success, string msg)> UserAccountId(RequestParams args)
@@ -123,7 +124,7 @@ namespace box_migration_automation
                 .GetFolderItemsAsync(id: "0", limit: 1000, offset: 0, fields: new[] { "id", "name", "owned_by", "is_externally_owned" }, autoPaginate: true);
 
             var ownedItems = ResolveOwnedItems(log, args, boxClient, items);
-            var internalCollabs = await ResolveInternalCollaborations(log, args, boxClient, items);
+            var internalCollabs = await ResolveInternalCollaborations(log, args, boxClient, items);           
             return ownedItems.Concat(internalCollabs).OrderBy(i => i.ItemName);
         }
 
@@ -139,7 +140,8 @@ namespace box_migration_automation
             var interallyCollabedFolders = itemsWithDifferentOwner
                 .Where(i => i.Type == "folder")
                 .Cast<BoxFolder>()
-                .Where(f => f.IsExternallyOwned.GetValueOrDefault(false) == false);
+                .Where(f => f.IsExternallyOwned.GetValueOrDefault(false) == false); 
+
             var interallyCollabedFiles = itemsWithDifferentOwner
                 .Where(i => i.Type == "file")
                 .Cast<BoxFile>()
@@ -149,12 +151,14 @@ namespace box_migration_automation
                 .Concat(interallyCollabedFolders.Cast<BoxItem>())
                 .OrderBy(i => i.Name);
 
+            log.LogInformation($"interally collabed sub items count :{internallyCollabedItems.Count()}"); 
+
             // find collaborations for each item
             var itemsParams = new List<ItemParams>();
             foreach (var item in internallyCollabedItems)
             {
                 // fetch all collaborations on this item
-                // log.LogInformation($"Fetching collabs for {item.Type} {item.Name} (id: {item.Id}");
+                //log.LogInformation($"Fetching collabs for {item.Type} {item.Name} (id: {item.Id}");
                 var itemCollabs = item.Type == "file"
                         ? await GetFileCollaborators(boxClient, item.Id)
                         : await GetFolderCollaborators(boxClient, item.Id);
@@ -167,8 +171,52 @@ namespace box_migration_automation
 
                 itemsParams.AddRange(userCollabs);
             }
+            
+            var interallyCollabedSubFolderCollabs = ResolveSubFolderCollaborations(log, boxClient, interallyCollabedFolders, args.UserId).Result;              
+            log.LogInformation($"sub folder collabs count: {interallyCollabedSubFolderCollabs.Count()}");
 
-            return itemsParams;
+            return itemsParams.Concat(interallyCollabedSubFolderCollabs);
+        }
+        private static async Task<IEnumerable<ItemParams>> ResolveSubFolderCollaborations(ILogger log, BoxClient boxClient, IEnumerable<BoxFolder> interallyCollabedFolders, string userId)
+        {
+            var folders = interallyCollabedFolders.Where(i => i.Type == "folder");
+            var itemsParams = new List<ItemParams>();
+            
+            foreach (var folder in folders)
+            {
+               var subfolders = GetSubfolders(boxClient, folder.Id, userId).Result.ToList();
+                                //.ParallelForEachAsync(f => GetSubfolders(boxClient, folder.Id, userId), 10);   
+                foreach (var item in subfolders)
+                {
+                    // fetch all collaborations on this item
+                    log.LogInformation($"Fetching collabs for {item.ItemType} {item.ItemName} (id: {item.ItemId}");
+                    var itemCollabs = item.ItemType == "file"
+                            ? await GetFileCollaborators(boxClient, item.ItemId)
+                            : await GetFolderCollaborators(boxClient, item.ItemId);
+
+                    // find the collaboration associated with this user.
+                    var userCollabs = itemCollabs
+                        .Where(c => c.AccessibleBy.Id == userId)
+                        .Select(c => new ItemParams(userId, c.Id, c.Type, item.ItemName))
+                        .ToList();
+
+                    itemsParams.AddRange(userCollabs);
+                     log.LogInformation($" Sub collabs for {item.ItemId} {item.ItemName}: {userCollabs.Count}");
+                }                               
+                              
+            }  
+            return itemsParams;          
+           
+        }
+        private static async Task<ItemParams[]> GetSubfolders(BoxClient boxClient, string folderId, string userId)
+        {
+            var items = await boxClient.FoldersManager.GetFolderItemsAsync(id: folderId, limit: 1000, offset: 0, fields: new[] { "id", "name", "owned_by" }, autoPaginate: true);
+            return items.Entries
+                .Where(i => i.OwnedBy.Id != userId)
+                .Select(f => new ItemParams(userId, f.Id, f.Type, f.Name))
+                .Where(f => f.ItemType == "folder")
+                .OrderBy(f => f.ItemName)
+                .ToArray();
         }
 
         [FunctionName(nameof(ProcessItem))]
@@ -180,17 +228,28 @@ namespace box_migration_automation
             if (args.ItemType == "file")
             {
                 log.LogInformation($"[{args.UserId}] Removing file {args.ItemName} (file id: {args.ItemId})");
-                // await boxClient.FilesManager.DeleteAsync(id: args.ItemId); 
+                await boxClient.FilesManager.DeleteAsync(args.ItemId); 
+                await boxClient.FilesManager.PurgeTrashedAsync(args.ItemId);
             }
             else if (args.ItemType == "folder")
             {
                 log.LogInformation($"[{args.UserId}] Removing folder {args.ItemName} (folder id: {args.ItemId})");
-                // await boxClient.FoldersManager.DeleteAsync(args.ItemId, recursive: true);
+                await boxClient.FoldersManager.DeleteAsync(args.ItemId, recursive: true);
+                await boxClient.FoldersManager.PurgeTrashedFolderAsync(args.ItemId);
             }
             else if (args.ItemType == "collaboration")
             {
-                log.LogInformation($"[{args.UserId}] Removing internal collaboration on {args.ItemName} (collab id: {args.ItemId})");
-                // await boxClient.CollaborationsManager.RemoveCollaborationAsync(args.ItemId);
+            
+                try
+                {
+                    log.LogInformation($"[{args.UserId}] Removing internal collaboration on {args.ItemName} (collab id: {args.ItemId})");
+                    await boxClient.CollaborationsManager.RemoveCollaborationAsync(args.ItemId);
+                }
+                catch (Exception ex)
+                {
+                    log.LogWarning(ex, $"[{args.UserId}] Failed to remove internal collaboration on {args.ItemName} (collab id: {args.ItemId})");
+                }
+                
             }
             else
             {

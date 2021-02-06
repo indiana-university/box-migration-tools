@@ -14,6 +14,7 @@
     <PackageReference Include="Microsoft.Azure.WebJobs.Extensions.DurableTask" Version="2.1.1" />
     <PackageReference Include="Microsoft.Azure.WebJobs.Extensions.DurableTask.Analyzers" Version="0.4.0" />
     <PackageReference Include="Sendgrid" Version="9.22.0" />  
+    <PackageReference Include="AsyncEnumerator" Version="4.0.2" />  
   </ItemGroup>
   <ItemGroup>
     <None Update="host.json">
