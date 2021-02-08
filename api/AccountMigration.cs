@@ -13,7 +13,7 @@ using System;
 using System.Linq;
 using SendGrid.Helpers.Mail;
 using SendGrid;
-using Dasync.Collections;
+
 
 namespace box_migration_automation
 {
@@ -291,8 +291,10 @@ namespace box_migration_automation
             var boxClient = CreateBoxAdminClient(log);             
             // set user account as active
             await TrySetAccountStatusToActive(log, args, boxClient);
+
+            var adminToken = CreateBoxAdminToken(log);
             // roll the user out from the enterprise
-            await TryConvertToPersonalAccount(log, args, boxClient);
+            await TryConvertToPersonalAccount(log, args, adminToken);
         }
 
         public static async Task TrySetAccountStatusToActive(ILogger log, MigrationParams args, BoxClient boxClient)
@@ -300,7 +302,7 @@ namespace box_migration_automation
             try
             {
                 log.LogDebug($"{args.MsgTag} Setting account status to 'active'...");
-                // await boxClient.UsersManager.UpdateUserInformationAsync(new BoxUserRequest() { Id = args.UserId, Status = "active" });  
+                await boxClient.UsersManager.UpdateUserInformationAsync(new BoxUserRequest() { Id = args.UserId, Status = "active" });  
                 log.LogInformation($"{args.MsgTag} Set account status to 'active'.");
             } 
             catch (Exception ex)
@@ -309,19 +311,31 @@ namespace box_migration_automation
             }
         }
 
-        public static async Task TryConvertToPersonalAccount(ILogger log, MigrationParams args, BoxClient boxClient)
-        {
+        public static async Task TryConvertToPersonalAccount(ILogger log, MigrationParams args, string adminToken)
+        {            
             try
             {
                 log.LogDebug($"{args.MsgTag} Converting to personal account...");
-                // await boxClient.UsersManager.UpdateUserInformationAsync(new BoxUserRequest() { Id = args.UserId, Enterprise = null });  
-                log.LogDebug($"{args.MsgTag} Converted to personal account.");
+                using (var client = new HttpClient())
+                {
+                    var req = new HttpRequestMessage(HttpMethod.Put, $"https://api.box.com/2.0/users/{args.UserId}");
+                    req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", adminToken);
+                    req.Content = new StringContent(@"{ ""notify"": true, ""enterprise"": null }", System.Text.Encoding.UTF8, "application/json");
+                    var resp = await client.SendAsync(req);
+                    if (!resp.IsSuccessStatusCode)
+                    {
+                        var respContent = await resp.Content.ReadAsStringAsync();
+                        throw new Exception($"{resp.StatusCode} '{respContent}'");
+                    }
+                }
+                log.LogInformation($"{args.MsgTag} Converted to personal account.");
             } 
             catch (Exception ex)
             {
                 throw LogError(log, ex, $"{args.MsgTag} Failed to convert to personal account.");
             }
         }
+        
         
         [FunctionName(nameof(SendUserNotification))]
         public static async Task SendUserNotification([ActivityTrigger] IDurableActivityContext context, ILogger log)
@@ -341,7 +355,7 @@ namespace box_migration_automation
             try
             {
                 log.LogDebug($"{args.MsgTag} Sending account rollout notification...");
-                await client.SendEmailAsync(message);
+                //await client.SendEmailAsync(message);
                 log.LogInformation($"{args.MsgTag} Sent account rollout notification.");
             }
             catch (Exception ex)
@@ -379,6 +393,21 @@ namespace box_migration_automation
             }
         }
 
+
+        public static string CreateBoxAdminToken(ILogger log)
+        {
+            try
+            {
+                var auth = CreateBoxJwtAuth();
+                var adminToken = auth.AdminToken();
+                return adminToken;
+            }
+            catch (Exception ex)
+            {
+               throw  LogError(log, ex, "Failed to create Box admin token.");
+            }
+        }        
+        
         public static BoxJWTAuth CreateBoxJwtAuth()
         {
             var boxConfigJson = System.Environment.GetEnvironmentVariable("BoxConfigJson");
@@ -448,4 +477,6 @@ namespace box_migration_automation
         }
     }
 }
+
+
 
