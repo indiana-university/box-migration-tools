@@ -153,24 +153,55 @@ namespace box_migration_automation
 
         public static async Task<BoxClient> GetBoxUserClient(ILogger log, string userId)
         {
-            return await Task.Run(() =>
+            try
             {
-                log.Information($"Creating Box user client as {{{Constants.BoxClientId}}}...", userId);
                 BoxJWTAuth boxJwtAuth = GetJwtAuth();
                 var userToken = boxJwtAuth.UserToken(userId);
-                return boxJwtAuth.UserClient(userToken, userId);
-            });
+                var boxUserClient = boxJwtAuth.UserClient(userToken, userId);
+                log.Information($"Created Box user client as {{{Constants.BoxClientId}}}...", userId);
+                return await Task.FromResult(boxUserClient);
+            }
+            catch (Exception ex)
+            {
+                log.Error(ex, $"Failed to create Box user client as {{{Constants.BoxClientId}}}...", userId);
+                throw new Exception ($"Failed to create Box user client as {userId}", ex);
+            }
         }
 
         public static async Task<BoxClient> GetBoxAdminClient(ILogger log)
         {
-            return await Task.Run(() =>
+            try
             {
-                log.Information("Creating Box admin client...");
                 BoxJWTAuth boxJwtAuth = GetJwtAuth();
                 var adminToken = boxJwtAuth.AdminToken();
-                return boxJwtAuth.AdminClient(adminToken);
-            });
+                var boxAdminClient = boxJwtAuth.AdminClient(adminToken);
+                log.Information($"Created Box admin client." );
+                return await Task.FromResult(boxAdminClient);
+
+            }
+            catch (Exception ex)
+            {
+                log.Error(ex, $"Failed to create Box admin client." ); 
+                throw new Exception ($"Failed to create Box Admin client", ex);
+            }               
+            
+        }
+
+        public static async Task<string> GetBoxAdminToken(ILogger log)
+        {
+            try
+            {
+                BoxJWTAuth boxJwtAuth = GetJwtAuth();
+                var adminToken = boxJwtAuth.AdminToken();
+                log.Information($"Created Box admin token.");
+                return await Task.FromResult(adminToken);
+
+            }
+            catch (Exception ex)
+            {
+                log.Error(ex, $"Failed to create Box admin token." ); 
+                throw new Exception ($"Failed to create Box admin token.", ex);
+            }
         }
 
         public static IActionResult HandleError(Exception ex,ILogger log)
