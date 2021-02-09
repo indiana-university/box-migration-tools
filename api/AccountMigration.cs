@@ -6,8 +6,6 @@ using Microsoft.Azure.WebJobs.Extensions.DurableTask;
 using Microsoft.Azure.WebJobs.Extensions.Http;
 using Microsoft.AspNetCore.Http;
 using Box.V2;
-using Box.V2.Config;
-using Box.V2.JWTAuth;
 using Box.V2.Models;
 using System;
 using System.Linq;
@@ -23,19 +21,14 @@ namespace box_migration_automation
         public class RequestParams
         { 
             // A Box Account login/email address
-            public string UserEmail { get; set; }                 
-
-            public virtual string MsgTag => $"[{UserEmail}]";
+            public string UserEmail { get; set; }          
         }
 
         public class MigrationParams : RequestParams
         {
             // a Box Account ID
             public string UserId { get; set; } 
-
-            public override string MsgTag => $"[{UserEmail} ({UserId})]";
         }
-
         
         public class ItemParams : MigrationParams
         { 
