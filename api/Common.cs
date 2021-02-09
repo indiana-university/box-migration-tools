@@ -123,19 +123,25 @@ namespace box_migration_automation
 
         private static ILogger Logger = CreateLogger();
 
-        public static ILogger GetLogger(ExecutionContext ctx, HttpRequest req, string userId)
+        public static ILogger GetLogger(ExecutionContext ctx, HttpRequest req, string userId, string userLogin)
         {
             var correlationId = 
                 req.Headers.TryGetValue("CorrelationID", out var correlationIds)
                 ? correlationIds.FirstOrDefault() ?? ""
                 : "";
 
-            return Logger
+            return GetLogger(ctx, userId, userLogin)
                 .ForContext(Constants.CorrelationId, correlationId)
-                .ForContext(Constants.IPAddress, req.HttpContext.Connection.RemoteIpAddress)
+                .ForContext(Constants.IPAddress, req.HttpContext.Connection.RemoteIpAddress);
+        }
+
+        public static ILogger GetLogger(ExecutionContext ctx, string userId, string userLogin)
+        {
+            return Logger
                 .ForContext(Constants.FunctionName, ctx.FunctionName)
                 .ForContext(Constants.InvocationId, ctx.InvocationId)
-                .ForContext(Constants.UserId, userId);
+                .ForContext(Constants.UserId, userId)
+                .ForContext(Constants.UserLogin, userLogin);
         }
 
         private static BoxJWTAuth GetJwtAuth()
