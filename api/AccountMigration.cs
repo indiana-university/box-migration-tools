@@ -4,7 +4,7 @@ using System.Threading.Tasks;
 using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.DurableTask;
 using Microsoft.Azure.WebJobs.Extensions.Http;
-using Microsoft.Extensions.Logging;
+using Microsoft.AspNetCore.Http;
 using Box.V2;
 using Box.V2.Config;
 using Box.V2.JWTAuth;
@@ -13,7 +13,8 @@ using System;
 using System.Linq;
 using SendGrid.Helpers.Mail;
 using SendGrid;
-
+using Serilog;
+using Microsoft.AspNetCore.Mvc;
 
 namespace box_migration_automation
 {
@@ -53,13 +54,14 @@ namespace box_migration_automation
         }
        
         [FunctionName(nameof(MigrateToPersonalAccount))]
-        public static async Task<HttpResponseMessage> MigrateToPersonalAccount(
-            [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post")] HttpRequestMessage req,
-            [DurableClient] IDurableOrchestrationClient starter,
-            ILogger log)
+        public static async Task<IActionResult> MigrateToPersonalAccount(
+            [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post")] HttpRequest req,
+            [DurableClient] IDurableOrchestrationClient starter, 
+            ExecutionContext ctx)
         {
             // Function input comes from the request content.    
-            var args = await req.Content.ReadAsAsync<RequestParams>();
+            var args = await Common.DeserializeRequestBody<RequestParams>(req);
+            var log = Common.GetLogger(ctx, req, null, args.UserEmail);
 
             // resolve the username to a box account ID
             var result = await UserAccountId(log, args);
@@ -74,24 +76,18 @@ namespace box_migration_automation
             // if failed return a http 400 bad request with some error information.
             else
             {
-                return new HttpResponseMessage(System.Net.HttpStatusCode.BadRequest)
-                {
-                    Content = new StringContent(result.msg, System.Text.Encoding.UTF8, "text/plain"),
-                };
+                return new BadRequestObjectResult(result.msg);
             }
         }
 
         [FunctionName(nameof(MigrationOrchestrator))]
         public static async Task MigrationOrchestrator(
-            [OrchestrationTrigger] IDurableOrchestrationContext context,            
-            ILogger log)
+            [OrchestrationTrigger] IDurableOrchestrationContext context)
         { 
             var args =  await Task.FromResult(context.GetInput<MigrationParams>()); 
             var retryOptions = new RetryOptions(
                     firstRetryInterval: TimeSpan.FromSeconds(5),
-                    maxNumberOfAttempts: 3){
-                        Handle = ex => throw LogError(log, ex, "")
-                    } ;
+                    maxNumberOfAttempts: 3);
     
             IEnumerable<ItemParams> itemsToProcess;
             int rounds = 0;
@@ -106,70 +102,63 @@ namespace box_migration_automation
 
                 // Fan-in to await removal of collaborations
                 await Task.WhenAll(itemTasks);
-            } while (itemsToProcess.Count() != 0 && (rounds++) < 100);
-            
-            // log.LogInformation($"{args.MsgTag} Finished processing items after {rounds} rounds.");
+            } while (itemsToProcess.Count() != 0 && (rounds++) < 100);            
            
-            await context.CallActivityWithRetryAsync(nameof(RollAccountOutOfEnterprise), retryOptions, args);
+            // await context.CallActivityWithRetryAsync(nameof(RollAccountOutOfEnterprise), retryOptions, args);
             await context.CallActivityWithRetryAsync(nameof(SendUserNotification), retryOptions, args);
         }  
 
         public static async Task<(bool success, string msg)> UserAccountId(ILogger log, RequestParams args)
         {
-            var boxClient = CreateBoxAdminClient(log);
-            try
+            var boxClient = await Common.GetBoxAdminClient(log);
+            var users = await Query(log, () => boxClient.UsersManager.GetEnterpriseUsersAsync(filterTerm: args.UserEmail),
+                $"Fetch Box account(s) for login.");
+                
+            if(users.Entries.Count > 1)
             {
-                log.LogDebug($"{args.MsgTag} Fetching account for login...");
-                var users = await boxClient.UsersManager.GetEnterpriseUsersAsync(filterTerm: args.UserEmail);
-                if(users.Entries.Count > 1)
-                {
-                    log.LogWarning($"{args.MsgTag} Multiple Box accounts found for login.");
-                    return (false, $"More than one Box account found for {args.UserEmail}");
-                }
-                else if(users.Entries.Count == 0)
-                {
-                    log.LogWarning($"{args.MsgTag} No Box account found for login.");
-                    return (false, $"No Box account was found for {args.UserEmail}");
-                }
-                else
-                {
-                    var userId = users.Entries.Single().Id;
-                    log.LogInformation($"[{args.UserEmail} ({userId})] Found single account for login.");
-                    return (true, userId);
-                }
+                log.Warning($"Multiple Box accounts found for login.");
+                return (false, $"Multiple Box accounts found for login.");
             }
-            catch (Exception ex)
+            else if(users.Entries.Count == 0)
             {
-                throw LogError(log, ex, $"{args.MsgTag} Failed to fetch account for login...");
+                log.Warning($"No Box account found for login.");
+                return (false, $"No Box account was found for login.");
+            }
+            else
+            {
+                var userId = users.Entries.Single().Id;
+                log.Information($"Found single Box account {{{Constants.UserId}}} for login.", userId);
+                return (true, userId);
             }
         }
 
 
         [FunctionName(nameof(GetBoxItemsToProcess))]
-        public static async Task<IEnumerable<ItemParams>> GetBoxItemsToProcess([ActivityTrigger] IDurableActivityContext context, ILogger log)
+        public static async Task<IEnumerable<ItemParams>> GetBoxItemsToProcess([ActivityTrigger] IDurableActivityContext context, ExecutionContext ctx)
         {
             var args = context.GetInput<MigrationParams>();
+            var log = Common.GetLogger(ctx, args.UserId, args.UserEmail);
 
             // get a box client for args.UserId
-            var boxClient = CreateBoxUserClient(log, args.UserId);
+            var boxClient = await Common.GetBoxUserClient(log, args.UserId);
 
             // list items in account root
-            var items = await boxClient.FoldersManager
-                .GetFolderItemsAsync(id: "0", limit: 1000, offset: 0, fields: new[] { "id", "name", "owned_by", "is_externally_owned", "path_collection"}, autoPaginate: true);
+            var items = await Query(log, ()=>GetFolderItems(boxClient), $"Get Folder Items");
 
-            var ownedItems = ResolveOwnedItems(log, args, boxClient, items);
-            var internalCollabs = await ResolveInternalCollaborations(log, args, boxClient, items);           
+            var ownedItems = ResolveOwnedItems(args, boxClient, items);
+            var internalCollabs = await ResolveInternalCollaborations(log, args, boxClient, items);
             return ownedItems.Concat(internalCollabs).OrderBy(i => i.ItemName);
         }
 
-        private static IEnumerable<ItemParams> ResolveOwnedItems(ILogger log, MigrationParams args, BoxClient boxClient, BoxCollection<BoxItem> items)
-        {
-            return 
-                items.Entries
+        private static Task<BoxCollection<BoxItem>> GetFolderItems(BoxClient boxClient)
+            => boxClient.FoldersManager
+                        .GetFolderItemsAsync(id: "0", limit: 1000, offset: 0, fields: new[] { "id", "name", "owned_by", "is_externally_owned", "path_collection" }, autoPaginate: true);        
+
+
+        private static IEnumerable<ItemParams> ResolveOwnedItems(MigrationParams args, BoxClient boxClient, BoxCollection<BoxItem> items)
+            => items.Entries
                 .Where(i => i.OwnedBy.Id == args.UserId)
                 .Select(i => new ItemParams(args, i.Id, i.Type, i.Name));
-
-        }
 
         private static async Task<IEnumerable<ItemParams>> ResolveInternalCollaborations(ILogger log, MigrationParams args, BoxClient boxClient, BoxCollection<BoxItem> items)
         {
@@ -196,10 +185,11 @@ namespace box_migration_automation
             foreach (var item in internallyCollabedItems)
             {
                 // fetch all collaborations on this item
-                log.LogDebug($"{args.MsgTag} Fetching collabs for {item.Type} {item.Name} (id: {item.Id}");
                 var itemCollabs = item.Type == "file"
-                        ? await GetFileCollaborators(log, args, boxClient, item.Id, item.Name)
-                        : await GetFolderCollaborators(log, args, boxClient, item.Id, item.Name);
+                        ? await Query(log, ()=>GetFileCollaborators(boxClient, item.Id), 
+                            $"Fetch file collabs for {{{Constants.ItemName}}} ({{{Constants.ItemId}}})", item.Name, item.Id)
+                        : await Query(log, ()=>GetFolderCollaborators(boxClient, item.Id), 
+                            $"Fetch folder collabs for {{{Constants.ItemName}}} ({{{Constants.ItemId}}})", item.Name, item.Id);
 
                 // find the collaboration associated with this user.
                 var userCollabs = itemCollabs
@@ -208,273 +198,154 @@ namespace box_migration_automation
                     .ToList();
 
                 itemsParams.AddRange(userCollabs);
-                // log.LogInformation($" Collabs on {item.Id} {item.Name}: {userCollabs.Count}");
             }
 
             return itemsParams;
         }
 
         [FunctionName(nameof(ProcessItem))]
-        public static async Task ProcessItem([ActivityTrigger] IDurableActivityContext context, ILogger log)
+        public static async Task ProcessItem([ActivityTrigger] IDurableActivityContext context, 
+            ExecutionContext ctx)
         {
             var args =  context.GetInput<ItemParams>();  
-            var boxClient = CreateBoxUserClient(log, args.UserId);
+            var log = Common.GetLogger(ctx, args.UserId, args.UserEmail);
+            var boxClient = await Common.GetBoxUserClient(log, args.UserId);
 
             if (args.ItemType == "file")
             {
-                await TryRemoveFile(log, args, boxClient);
+                await Command(log, ()=>RemoveFile(boxClient, args), 
+                    $"Remove {{{Constants.ItemType}}} {{{Constants.ItemName}}} ({{{Constants.ItemId}}})", args.ItemType, args.ItemName, args.ItemId);
             }
             else if (args.ItemType == "folder")
             {
-                await TryRemoveFolder(log, args, boxClient);
-
+                await Command(log, ()=>RemoveFolder(boxClient, args), 
+                    $"Remove {{{Constants.ItemType}}} {{{Constants.ItemName}}} ({{{Constants.ItemId}}})", args.ItemType, args.ItemName, args.ItemId);
             }
             else if (args.ItemType == "collaboration")
             {
-                await TryRemoveCollaboration(log, args, boxClient);
+                await Command(log, ()=>RemoveCollaboration(boxClient, args), 
+                    $"Remove {{{Constants.ItemType}}} {{{Constants.ItemName}}} ({{{Constants.ItemId}}})", args.ItemType, args.ItemName, args.ItemId);
+                
             }
             else
             {
-                log.LogError($"{args.MsgTag} Unrecognized item type {args.ItemType} for {args.ItemName} (item id: {args.ItemId})");
+                log.Error($"Unrecognized item type {{{Constants.ItemType}}} for {{{Constants.ItemName}}} (item id: {{{Constants.ItemId}}})", args.ItemType, args.ItemType, args.ItemId);
             }
         }
 
-        private static async Task TryRemoveFile(ILogger log, ItemParams args, BoxClient boxClient)
+        private static async Task RemoveFile(BoxClient boxClient, ItemParams args)
         {
-            try
-            {
-                log.LogDebug($"{args.MsgTag} Removing file {args.ItemName} ({args.ItemId})...");
-                await boxClient.FilesManager.DeleteAsync(args.ItemId);
-                await boxClient.FilesManager.PurgeTrashedAsync(args.ItemId);
-                log.LogInformation($"{args.MsgTag} Removed file {args.ItemName} ({args.ItemId}).");
-            }
-            catch (Exception ex)
-            {
-                throw LogError(log, ex, $"{args.MsgTag} Failed to remove file {args.ItemName} ({args.ItemId}).");             
-            } 
+            await boxClient.FilesManager.DeleteAsync(args.ItemId);
+            await boxClient.FilesManager.PurgeTrashedAsync(args.ItemId);
         }
 
-        public static async Task TryRemoveFolder(ILogger log, ItemParams args, BoxClient boxClient)
+        public static async Task RemoveFolder(BoxClient boxClient, ItemParams args)
         {
-            try
-            {
-                log.LogDebug($"{args.MsgTag} Removing folder {args.ItemName} ({args.ItemId})...");
-                await boxClient.FoldersManager.DeleteAsync(args.ItemId, recursive: true);
-                await boxClient.FoldersManager.PurgeTrashedFolderAsync(args.ItemId);
-                log.LogInformation($"{args.MsgTag} Removed folder {args.ItemName} ({args.ItemId}).");
-            }
-            catch (Exception ex)
-            {
-                throw LogError(log, ex, $"{args.MsgTag} Failed to remove folder {args.ItemName} ({args.ItemId}).");
-            }                
+            await boxClient.FoldersManager.DeleteAsync(args.ItemId, recursive: true);
+            await boxClient.FoldersManager.PurgeTrashedFolderAsync(args.ItemId);                           
         }
 
-        public static async Task TryRemoveCollaboration(ILogger log, ItemParams args, BoxClient boxClient)
-        {
-            try
-            {
-                log.LogDebug($"{args.MsgTag} Removing collab on {args.ItemName} ({args.ItemId})...");
-                await boxClient.CollaborationsManager.RemoveCollaborationAsync(args.ItemId);
-                log.LogInformation($"{args.MsgTag} Finished removing collab on {args.ItemName} ({args.ItemId}).");
-            }
-            catch (Exception ex)
-            {
-                throw LogError(log, ex, $"{args.MsgTag} Failed to remove collab on {args.ItemName} ({args.ItemId}).");
-            }                
-        }
+        public static Task RemoveCollaboration(BoxClient boxClient, ItemParams args)
+            => boxClient.CollaborationsManager.RemoveCollaborationAsync(args.ItemId);                     
 
         [FunctionName(nameof(RollAccountOutOfEnterprise))]
-        public static async Task RollAccountOutOfEnterprise([ActivityTrigger] IDurableActivityContext context, ILogger log)
+        public static async Task RollAccountOutOfEnterprise([ActivityTrigger] IDurableActivityContext context, ExecutionContext ctx)
         {
             var args =  context.GetInput<MigrationParams>();
-            // get a box admin client
-            var boxClient = CreateBoxAdminClient(log);             
+            var log = Common.GetLogger(ctx, args.UserId, args.UserEmail);
+
             // set user account as active
-            await TrySetAccountStatusToActive(log, args, boxClient);
+            var boxClient = await Common.GetBoxAdminClient(log);             
+            await Command(log, () => SetAccountStatusToActive(boxClient, args), "Set account status to active");
 
-            var adminToken = CreateBoxAdminToken(log);
             // roll the user out from the enterprise
-            await TryConvertToPersonalAccount(log, args, adminToken);
+            var adminToken = await Common.GetBoxAdminToken(log);
+            await Command(log, () => ConvertToPersonalAccount(adminToken, args), "Convert to personal account");
         }
 
-        public static async Task TrySetAccountStatusToActive(ILogger log, MigrationParams args, BoxClient boxClient)
-        {
-            try
-            {
-                log.LogDebug($"{args.MsgTag} Setting account status to 'active'...");
-                await boxClient.UsersManager.UpdateUserInformationAsync(new BoxUserRequest() { Id = args.UserId, Status = "active" });  
-                log.LogInformation($"{args.MsgTag} Set account status to 'active'.");
-            } 
-            catch (Exception ex)
-            {
-                throw LogError(log, ex, $"{args.MsgTag} Failed to set account status to 'active'.");
-            }
-        }
+        public static Task SetAccountStatusToActive(BoxClient boxClient, MigrationParams args)
+            => boxClient.UsersManager.UpdateUserInformationAsync(new BoxUserRequest() { Id = args.UserId, Status = "active" });  
 
-        public static async Task TryConvertToPersonalAccount(ILogger log, MigrationParams args, string adminToken)
+        public static async Task ConvertToPersonalAccount(string adminToken, MigrationParams args)
         {            
-            try
+            using (var client = new HttpClient())
             {
-                log.LogDebug($"{args.MsgTag} Converting to personal account...");
-                using (var client = new HttpClient())
+                var req = new HttpRequestMessage(HttpMethod.Put, $"https://api.box.com/2.0/users/{args.UserId}");
+                req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", adminToken);
+                req.Content = new StringContent(@"{ ""notify"": true, ""enterprise"": null }", System.Text.Encoding.UTF8, "application/json");
+                var resp = await client.SendAsync(req);
+                if (!resp.IsSuccessStatusCode)
                 {
-                    var req = new HttpRequestMessage(HttpMethod.Put, $"https://api.box.com/2.0/users/{args.UserId}");
-                    req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", adminToken);
-                    req.Content = new StringContent(@"{ ""notify"": true, ""enterprise"": null }", System.Text.Encoding.UTF8, "application/json");
-                    var resp = await client.SendAsync(req);
-                    if (!resp.IsSuccessStatusCode)
-                    {
-                        var respContent = await resp.Content.ReadAsStringAsync();
-                        throw new Exception($"{resp.StatusCode} '{respContent}'");
-                    }
+                    var respContent = await resp.Content.ReadAsStringAsync();
+                    throw new Exception($"{resp.StatusCode} '{respContent}'");
                 }
-                log.LogInformation($"{args.MsgTag} Converted to personal account.");
-            } 
-            catch (Exception ex)
-            {
-                throw LogError(log, ex, $"{args.MsgTag} Failed to convert to personal account.");
             }
         }
-        
         
         [FunctionName(nameof(SendUserNotification))]
-        public static async Task SendUserNotification([ActivityTrigger] IDurableActivityContext context, ILogger log)
+        public static Task SendUserNotification([ActivityTrigger] IDurableActivityContext context, ExecutionContext ctx)
         {
             var args =  context.GetInput<MigrationParams>();
-            var apiKey = Environment.GetEnvironmentVariable("SendGridApiKey");
-            var fromAddress = Environment.GetEnvironmentVariable("MigrationNotificationFromAddress");
-            var client = new SendGridClient(apiKey);
+            var log = Common.GetLogger(ctx, args.UserId, args.UserEmail);
 
-            var message = new SendGridMessage();
-            message.SetFrom(new EmailAddress(fromAddress, "Box Migration Notifications"));
-            message.AddTo(new EmailAddress(args.UserEmail));
-            message.SetSubject("Box account migration update");
-            message.AddContent(MimeType.Text, $@"Hello, Your Box account has been migrated to a personal account. 
-            Any external collaborations you may have had were preserved, but any university-related data has been removed from your account.");
+            Task DoSend(){
+                var apiKey = Environment.GetEnvironmentVariable("SendGridApiKey");
+                var fromAddress = Environment.GetEnvironmentVariable("MigrationNotificationFromAddress");
+                var client = new SendGridClient(apiKey);
 
-            try
-            {
-                log.LogDebug($"{args.MsgTag} Sending account rollout notification...");
-                //await client.SendEmailAsync(message);
-                log.LogInformation($"{args.MsgTag} Sent account rollout notification.");
-            }
-            catch (Exception ex)
-            {
-                throw LogError(log, ex, $"{args.MsgTag} Failed to send account rollout notification.");
+                var message = new SendGridMessage();
+                message.SetFrom(new EmailAddress(fromAddress, "Box Migration Notifications"));
+                message.AddTo(new EmailAddress(args.UserEmail));
+                message.SetSubject("Box account migration update");
+                message.AddContent(MimeType.Text, $@"Hello, Your Box account has been migrated to a personal account. 
+                Any external collaborations you may have had were preserved, but any university-related data has been removed from your account.");
+
+                return client.SendEmailAsync(message);
             }
 
+            return Command(log, DoSend, "Send account rollout notification");
         }
 
-        public static BoxClient CreateBoxUserClient(ILogger log, string userId)
+        private static async Task<List<BoxCollaboration>> GetFolderCollaborators(BoxClient client, string itemId)
         {
-            try
-            {
-                var auth = CreateBoxJwtAuth();
-                var userToken = auth.UserToken(userId);
-                return auth.UserClient(userToken, userId);  
-            }
-            catch (Exception ex)
-            {
-                throw LogError(log, ex, "Failed to create Box admin client.");                
-            }
+            var collection = await client.FoldersManager.GetCollaborationsAsync(itemId, fields:new[]{"owned_by", "accessible_by", "item"});
+            return collection.Entries;            
         }
 
-        public static BoxClient CreateBoxAdminClient(ILogger log)
+        private static async Task<List<BoxCollaboration>> GetFileCollaborators(BoxClient client, string itemId)
+        {
+            var collection = await client.FilesManager.GetCollaborationsCollectionAsync(itemId, fields:new[]{"owned_by", "accessible_by", "item"}, autoPaginate: true);
+            return collection.Entries;
+        }
+
+        private static async Task Command(ILogger log, Func<Task> command, string msgTemplate, params object[] msgArgs )
         {
             try
             {
-                var auth = CreateBoxJwtAuth();
-                var adminToken = auth.AdminToken();
-                return auth.AdminClient(adminToken);  
-            }
-            catch (Exception ex)
-            {
-               throw  LogError(log, ex, "Failed to create Box admin client.");
-            }
-        }
-
-
-        public static string CreateBoxAdminToken(ILogger log)
-        {
-            try
-            {
-                var auth = CreateBoxJwtAuth();
-                var adminToken = auth.AdminToken();
-                return adminToken;
-            }
-            catch (Exception ex)
-            {
-               throw  LogError(log, ex, "Failed to create Box admin token.");
-            }
-        }        
-        
-        public static BoxJWTAuth CreateBoxJwtAuth()
-        {
-            var boxConfigJson = System.Environment.GetEnvironmentVariable("BoxConfigJson");
-            var config = BoxConfig.CreateFromJsonString(boxConfigJson);            
-            return new BoxJWTAuth(config);
-        }
-
-        private static async Task<List<BoxCollaboration>> GetFolderCollaborators(ILogger log, MigrationParams args, BoxClient client, string itemId, string itemName)
-        {
-            try
-            {
-                var collection = await client.FoldersManager.GetCollaborationsAsync(itemId, fields:new[]{"owned_by", "accessible_by", "item"});
-                return collection.Entries;
-            }   
-            catch (Exception ex)
-            {
-                throw LogError(log, ex, $"{args.MsgTag} Failed to fetch folder collabs for {itemName} ({itemId})");
-            }
-        }
-
-        private static async Task<List<BoxCollaboration>> GetFileCollaborators(ILogger log, MigrationParams args, BoxClient client, string itemId, string itemName)
-        {
-            try 
-            {
-                var collection = await client.FilesManager.GetCollaborationsCollectionAsync(itemId, fields:new[]{"owned_by", "accessible_by", "item"}, autoPaginate: true);
-                return collection.Entries;
-            }
-            catch(Exception ex)
-            {
-                throw LogError(log, ex, $"{args.MsgTag} Failed to fetch file collabs for {itemName}({itemId})");
-            }
-        }
-
-        private static async Task Command(ILogger log, MigrationParams args, string msg, Func<Task> command)
-        {
-            try
-            {
-                log.LogDebug($"{args.MsgTag} [TRY] {msg}");
                 await command();
-                log.LogInformation($"{args.MsgTag} [OK] {msg}");
+                log.Information($"{msgTemplate}", msgArgs);
             }
             catch (Exception ex)
             {
-                throw LogError(log, ex, $"{args.MsgTag} [ERR] {msg}");
+                log.Error(ex, $"[ERR] {msgTemplate}", msgArgs);
+                throw new Exception("Box command failed.", ex);
             }
         } 
 
-        private static async Task<T> Query<T>(ILogger log, MigrationParams args, string msg, Func<Task<T>> query)
+        private static async Task<T> Query<T>(ILogger log, Func<Task<T>> query, string msgTemplate, params object[] msgArgs )
         {
             try
             {
-                log.LogDebug($"{args.MsgTag} [TRY] {msg}");
-                var result =  await query();
-                log.LogInformation($"{args.MsgTag} [OK] {msg}");
+                var result = await query();
+                log.Information($"{msgTemplate}", msgArgs);
                 return result;
             }
             catch (Exception ex)
             {
-                throw LogError(log, ex, $"{args.MsgTag} [ERR] {msg}");
+                log.Error(ex, $"[ERR] {msgTemplate}", msgArgs);
+                throw new Exception("Box query failed.", ex);
             }
         } 
-
-        private static Exception LogError(ILogger log, Exception ex, string msg)
-        {
-            log.LogError(ex, msg);
-            return new Exception(msg, ex);
-        }
     }
 }
 
