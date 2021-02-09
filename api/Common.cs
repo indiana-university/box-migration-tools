@@ -68,6 +68,7 @@ namespace box_migration_automation
             Constants.GroupId,
             Constants.GroupName,
             Constants.ItemId,
+            Constants.ItemName,
             Constants.ItemType,
             Constants.ManagedFolderId,
             Constants.ManagedFolderName,
