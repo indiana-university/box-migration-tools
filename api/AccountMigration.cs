@@ -82,6 +82,8 @@ namespace box_migration_automation
                     firstRetryInterval: TimeSpan.FromSeconds(5),
                     maxNumberOfAttempts: 3);
     
+            await context.CallActivityWithRetryAsync(nameof(SetAccountStatusToActive), retryOptions, args);
+
             IEnumerable<ItemParams> itemsToProcess;
             int rounds = 0;
             do
@@ -246,17 +248,25 @@ namespace box_migration_automation
         {
             var args =  context.GetInput<MigrationParams>();
             var log = Common.GetLogger(ctx, args.UserId, args.UserEmail);
-
-            // set user account as active
-            var boxClient = await Common.GetBoxAdminClient(log);             
-            await Command(log, () => SetAccountStatusToActive(boxClient, args), "Set account status to active");
-
+           
             // roll the user out from the enterprise
             var adminToken = await Common.GetBoxAdminToken(log);
             await Command(log, () => ConvertToPersonalAccount(adminToken, args), "Convert to personal account");
         }
 
-        public static Task SetAccountStatusToActive(BoxClient boxClient, MigrationParams args)
+         [FunctionName(nameof(SetAccountStatusToActive))]
+        public static async Task SetAccountStatusToActive([ActivityTrigger] IDurableActivityContext context, ExecutionContext ctx)
+        {
+            var args =  context.GetInput<MigrationParams>();
+            var log = Common.GetLogger(ctx, args.UserId, args.UserEmail);
+
+            // set user account as active
+            var boxClient = await Common.GetBoxAdminClient(log);             
+            await Command(log, () => DoSetAccountStatusToActive(boxClient, args), "Set account status to active");
+           
+        }
+
+        public static Task DoSetAccountStatusToActive(BoxClient boxClient, MigrationParams args)
             => boxClient.UsersManager.UpdateUserInformationAsync(new BoxUserRequest() { Id = args.UserId, Status = "active" });  
 
         public static async Task ConvertToPersonalAccount(string adminToken, MigrationParams args)
