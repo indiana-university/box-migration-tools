@@ -48,7 +48,7 @@ namespace box_migration_automation
        
         [FunctionName(nameof(MigrateToPersonalAccount))]
         public static async Task<IActionResult> MigrateToPersonalAccount(
-            [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post")] HttpRequest req,
+            [HttpTrigger(AuthorizationLevel.Function, "get", "post")] HttpRequest req,
             [DurableClient] IDurableOrchestrationClient starter, 
             ExecutionContext ctx)
         {
