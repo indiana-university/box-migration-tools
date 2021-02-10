@@ -48,10 +48,10 @@ namespace box_migration_automation
 
     public static class Common
     {
-        public static string Env(string key)
+        public static string Env(string key, bool required=false)
         {
             var value = System.Environment.GetEnvironmentVariable(key);
-            if (string.IsNullOrWhiteSpace(value))
+            if (string.IsNullOrWhiteSpace(value) && required)
             {
                 throw new Exception($"'{key}' is missing from the environment. This is a required setting.");
             }
@@ -146,7 +146,7 @@ namespace box_migration_automation
 
         private static BoxJWTAuth GetJwtAuth()
         {
-            var configJson = Env("BoxConfigJson");
+            var configJson = Env("BoxConfigJson", required:true);
             var config = BoxConfig.CreateFromJsonString(configJson);
             return new BoxJWTAuth(config);
         }
