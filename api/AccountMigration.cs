@@ -84,12 +84,9 @@ namespace box_migration_automation
             await EmptyTrash(context, args);
             //await ConvertToPersonalAccount(context, args);
         }
-
         private static readonly RetryOptions RetryOptions = new RetryOptions(
                                 firstRetryInterval: TimeSpan.FromSeconds(5),
-                                maxNumberOfAttempts: 3);
-        
-
+                                maxNumberOfAttempts: 3); 
         private static Task ActivateAccount(IDurableOrchestrationContext context, MigrationParams args)
             => context.CallActivityWithRetryAsync(nameof(SetAccountStatusToActive), RetryOptions, args);
 
@@ -104,26 +101,23 @@ namespace box_migration_automation
                 // Generate list of collaborations to remove
                 itemsToProcess = await context.CallActivityWithRetryAsync<IEnumerable<ItemParams>>(
                     nameof(GetBoxItemsToRemove), RetryOptions, args);
+                foreach (var item in itemsToProcess)
+                {
+                    await context.CallActivityWithRetryAsync(nameof(RemoveItem), RetryOptions, item);
+                } 
 
-                var itemTasks = itemsToProcess.Select(itemParams =>
-                    context.CallActivityWithRetryAsync(nameof(RemoveItem), RetryOptions, itemParams));
-
-                // Fan-in to await removal of collaborations
-                await Task.WhenAll(itemTasks);
             } while (itemsToProcess.Count() != 0 && (rounds++) < 100);
         }
 
         private static async Task EmptyTrash(IDurableOrchestrationContext context, MigrationParams args)
         {
-            /* Delete Trashed Files and Folders */
             var trashedItems = await context.CallActivityWithRetryAsync<IEnumerable<ItemParams>>(
                 nameof(ListAllTheTrashedItems), RetryOptions, args);
 
-            var trashTasks = trashedItems.Select(itemParams =>
-                context.CallActivityWithRetryAsync(nameof(PurgeTrashedItem), RetryOptions, itemParams));
-
-            // Fan-in to await removal of collaborations
-            await Task.WhenAll(trashTasks);
+            foreach (var item in trashedItems)
+            {
+                await context.CallActivityWithRetryAsync(nameof(PurgeTrashedItem), RetryOptions, item);
+            }
         }
 
         private static async Task ConvertToPersonalAccount(IDurableOrchestrationContext context, MigrationParams args)
@@ -268,12 +262,12 @@ namespace box_migration_automation
             if (args.ItemType == "file")
             {
                 await Command(log, ()=> boxClient.FilesManager.PurgeTrashedAsync(args.ItemId), 
-                    $"Remove {{{Constants.ItemType}}} {{{Constants.ItemName}}} ({{{Constants.ItemId}}})", args.ItemType, args.ItemName, args.ItemId);
+                    $"Purge trashed {{{Constants.ItemType}}} {{{Constants.ItemName}}} ({{{Constants.ItemId}}})", args.ItemType, args.ItemName, args.ItemId);
             }
             else if (args.ItemType == "folder")
             {
                 await Command(log, ()=> boxClient.FoldersManager.PurgeTrashedFolderAsync(args.ItemId), 
-                    $"Remove {{{Constants.ItemType}}} {{{Constants.ItemName}}} ({{{Constants.ItemId}}})", args.ItemType, args.ItemName, args.ItemId);
+                    $"Purge trashed {{{Constants.ItemType}}} {{{Constants.ItemName}}} ({{{Constants.ItemId}}})", args.ItemType, args.ItemName, args.ItemId);
             }
             else
             {
