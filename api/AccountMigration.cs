@@ -76,32 +76,61 @@ namespace box_migration_automation
         [FunctionName(nameof(MigrationOrchestrator))]
         public static async Task MigrationOrchestrator(
             [OrchestrationTrigger] IDurableOrchestrationContext context)
-        { 
-            var args =  await Task.FromResult(context.GetInput<MigrationParams>()); 
-            var retryOptions = new RetryOptions(
-                    firstRetryInterval: TimeSpan.FromSeconds(5),
-                    maxNumberOfAttempts: 3);
-    
-            await context.CallActivityWithRetryAsync(nameof(SetAccountStatusToActive), retryOptions, args);
+        {
+            var args = await Task.FromResult(context.GetInput<MigrationParams>());
 
+            await ActivateAccount(context, args);
+            await RemoveFilesFoldersAndInternalCollabs(context, args);
+            await EmptyTrash(context, args);
+            //await ConvertToPersonalAccount(context, args);
+        }
+
+        private static readonly RetryOptions RetryOptions = new RetryOptions(
+                                firstRetryInterval: TimeSpan.FromSeconds(5),
+                                maxNumberOfAttempts: 3);
+        
+
+        private static Task ActivateAccount(IDurableOrchestrationContext context, MigrationParams args)
+            => context.CallActivityWithRetryAsync(nameof(SetAccountStatusToActive), RetryOptions, args);
+
+        private static async Task RemoveFilesFoldersAndInternalCollabs(IDurableOrchestrationContext context, MigrationParams args)
+        {
+
+            /* Delete Files, Folders, and internal Collaborations */
             IEnumerable<ItemParams> itemsToProcess;
             int rounds = 0;
             do
             {
                 // Generate list of collaborations to remove
                 itemsToProcess = await context.CallActivityWithRetryAsync<IEnumerable<ItemParams>>(
-                    nameof(GetBoxItemsToProcess), retryOptions, args);
+                    nameof(GetBoxItemsToRemove), RetryOptions, args);
 
-                var itemTasks = itemsToProcess.Select(itemParams => 
-                    context.CallActivityWithRetryAsync(nameof(ProcessItem), retryOptions, itemParams));
+                var itemTasks = itemsToProcess.Select(itemParams =>
+                    context.CallActivityWithRetryAsync(nameof(RemoveItem), RetryOptions, itemParams));
 
                 // Fan-in to await removal of collaborations
                 await Task.WhenAll(itemTasks);
-            } while (itemsToProcess.Count() != 0 && (rounds++) < 100);            
-           
-            await context.CallActivityWithRetryAsync(nameof(RollAccountOutOfEnterprise), retryOptions, args);
-            await context.CallActivityWithRetryAsync(nameof(SendUserNotification), retryOptions, args);
-        }  
+            } while (itemsToProcess.Count() != 0 && (rounds++) < 100);
+        }
+
+        private static async Task EmptyTrash(IDurableOrchestrationContext context, MigrationParams args)
+        {
+            /* Delete Trashed Files and Folders */
+            var trashedItems = await context.CallActivityWithRetryAsync<IEnumerable<ItemParams>>(
+                nameof(ListAllTheTrashedItems), RetryOptions, args);
+
+            var trashTasks = trashedItems.Select(itemParams =>
+                context.CallActivityWithRetryAsync(nameof(PurgeTrashedItem), RetryOptions, itemParams));
+
+            // Fan-in to await removal of collaborations
+            await Task.WhenAll(trashTasks);
+        }
+
+        private static async Task ConvertToPersonalAccount(IDurableOrchestrationContext context, MigrationParams args)
+        {
+            await context.CallActivityWithRetryAsync(nameof(RollAccountOutOfEnterprise), RetryOptions, args);
+            await context.CallActivityWithRetryAsync(nameof(SendUserNotification), RetryOptions, args);
+        }
 
         public static async Task<(bool success, string msg)> UserAccountId(ILogger log, RequestParams args)
         {
@@ -128,8 +157,8 @@ namespace box_migration_automation
         }
 
 
-        [FunctionName(nameof(GetBoxItemsToProcess))]
-        public static async Task<IEnumerable<ItemParams>> GetBoxItemsToProcess([ActivityTrigger] IDurableActivityContext context, ExecutionContext ctx)
+        [FunctionName(nameof(GetBoxItemsToRemove))]
+        public static async Task<IEnumerable<ItemParams>> GetBoxItemsToRemove([ActivityTrigger] IDurableActivityContext context, ExecutionContext ctx)
         {
             var args = context.GetInput<MigrationParams>();
             var log = Common.GetLogger(ctx, args.UserId, args.UserEmail);
@@ -198,8 +227,8 @@ namespace box_migration_automation
             return itemsParams;
         }
 
-        [FunctionName(nameof(ProcessItem))]
-        public static async Task ProcessItem([ActivityTrigger] IDurableActivityContext context, 
+        [FunctionName(nameof(RemoveItem))]
+        public static async Task RemoveItem([ActivityTrigger] IDurableActivityContext context, 
             ExecutionContext ctx)
         {
             var args =  context.GetInput<ItemParams>();  
@@ -208,17 +237,17 @@ namespace box_migration_automation
 
             if (args.ItemType == "file")
             {
-                await Command(log, ()=>RemoveFile(boxClient, args), 
+                await Command(log, ()=> boxClient.FilesManager.DeleteAsync(args.ItemId), 
                     $"Remove {{{Constants.ItemType}}} {{{Constants.ItemName}}} ({{{Constants.ItemId}}})", args.ItemType, args.ItemName, args.ItemId);
             }
             else if (args.ItemType == "folder")
             {
-                await Command(log, ()=>RemoveFolder(boxClient, args), 
+                await Command(log, ()=> boxClient.FoldersManager.DeleteAsync(args.ItemId, recursive: true), 
                     $"Remove {{{Constants.ItemType}}} {{{Constants.ItemName}}} ({{{Constants.ItemId}}})", args.ItemType, args.ItemName, args.ItemId);
             }
             else if (args.ItemType == "collaboration")
             {
-                await Command(log, ()=>RemoveCollaboration(boxClient, args), 
+                await Command(log, ()=> boxClient.CollaborationsManager.RemoveCollaborationAsync(args.ItemId), 
                     $"Remove {{{Constants.ItemType}}} {{{Constants.ItemName}}} ({{{Constants.ItemId}}})", args.ItemType, args.ItemName, args.ItemId);
                 
             }
@@ -228,20 +257,29 @@ namespace box_migration_automation
             }
         }
 
-        private static async Task RemoveFile(BoxClient boxClient, ItemParams args)
+        [FunctionName(nameof(PurgeTrashedItem))]
+        public static async Task PurgeTrashedItem([ActivityTrigger] IDurableActivityContext context, 
+            ExecutionContext ctx)
         {
-            await boxClient.FilesManager.DeleteAsync(args.ItemId);
-            await boxClient.FilesManager.PurgeTrashedAsync(args.ItemId);
-        }
+            var args =  context.GetInput<ItemParams>();  
+            var log = Common.GetLogger(ctx, args.UserId, args.UserEmail);
+            var boxClient = await Common.GetBoxUserClient(log, args.UserId);
 
-        public static async Task RemoveFolder(BoxClient boxClient, ItemParams args)
-        {
-            await boxClient.FoldersManager.DeleteAsync(args.ItemId, recursive: true);
-            await boxClient.FoldersManager.PurgeTrashedFolderAsync(args.ItemId);                           
+            if (args.ItemType == "file")
+            {
+                await Command(log, ()=> boxClient.FilesManager.PurgeTrashedAsync(args.ItemId), 
+                    $"Remove {{{Constants.ItemType}}} {{{Constants.ItemName}}} ({{{Constants.ItemId}}})", args.ItemType, args.ItemName, args.ItemId);
+            }
+            else if (args.ItemType == "folder")
+            {
+                await Command(log, ()=> boxClient.FoldersManager.PurgeTrashedFolderAsync(args.ItemId), 
+                    $"Remove {{{Constants.ItemType}}} {{{Constants.ItemName}}} ({{{Constants.ItemId}}})", args.ItemType, args.ItemName, args.ItemId);
+            }
+            else
+            {
+                log.Error($"Unrecognized item type {{{Constants.ItemType}}} for {{{Constants.ItemName}}} (item id: {{{Constants.ItemId}}})", args.ItemType, args.ItemType, args.ItemId);
+            }
         }
-
-        public static Task RemoveCollaboration(BoxClient boxClient, ItemParams args)
-            => boxClient.CollaborationsManager.RemoveCollaborationAsync(args.ItemId);                     
 
         [FunctionName(nameof(RollAccountOutOfEnterprise))]
         public static async Task RollAccountOutOfEnterprise([ActivityTrigger] IDurableActivityContext context, ExecutionContext ctx)
@@ -251,7 +289,8 @@ namespace box_migration_automation
            
             // roll the user out from the enterprise
             var adminToken = await Common.GetBoxAdminToken(log);
-            await Command(log, () => ConvertToPersonalAccount(adminToken, args), "Convert to personal account");
+            await Command(log, () => ConvertToPersonalAccount(adminToken, args), 
+                "Convert to personal account");
         }
 
          [FunctionName(nameof(SetAccountStatusToActive))]
@@ -262,20 +301,30 @@ namespace box_migration_automation
 
             // set user account as active
             var boxClient = await Common.GetBoxAdminClient(log);             
-            await Command(log, () => DoSetAccountStatusToActive(boxClient, args), "Set account status to active");
-           
+            var req = new BoxUserRequest() { Id = args.UserId, Status = "active" };
+            await Command(log, () => boxClient.UsersManager.UpdateUserInformationAsync(req), 
+                "Set account status to active");           
         }
-
-        public static Task DoSetAccountStatusToActive(BoxClient boxClient, MigrationParams args)
-            => boxClient.UsersManager.UpdateUserInformationAsync(new BoxUserRequest() { Id = args.UserId, Status = "active" });  
-
+        
+        [FunctionName(nameof(ListAllTheTrashedItems))]
+        public static async Task<IEnumerable<ItemParams>> ListAllTheTrashedItems([ActivityTrigger] IDurableActivityContext context, ExecutionContext ctx)
+        {
+            var args =  context.GetInput<MigrationParams>();
+            var log = Common.GetLogger(ctx, args.UserId, args.UserEmail);
+           
+            var boxClient = await Common.GetBoxUserClient(log, args.UserId); 
+            var trashedItems = await Query(log, ()=> boxClient.FoldersManager.GetTrashItemsAsync(1000, autoPaginate: true), 
+                "List all the trashed items");
+            return trashedItems.Entries.Select(i => new ItemParams(args, i.Id, i.Type, i.Name));
+        }
+            
         public static async Task ConvertToPersonalAccount(string adminToken, MigrationParams args)
         {            
             using (var client = new HttpClient())
             {
                 var req = new HttpRequestMessage(HttpMethod.Put, $"https://api.box.com/2.0/users/{args.UserId}");
                 req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", adminToken);
-                req.Content = new StringContent(@"{ ""notify"": true, ""enterprise"": null }", System.Text.Encoding.UTF8, "application/json");
+                req.Content = new StringContent(@"{ ""notify"": false, ""enterprise"": null }", System.Text.Encoding.UTF8, "application/json");
                 var resp = await client.SendAsync(req);
                 if (!resp.IsSuccessStatusCode)
                 {
