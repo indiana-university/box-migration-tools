@@ -99,7 +99,7 @@ namespace box_migration_automation
                 await Task.WhenAll(itemTasks);
             } while (itemsToProcess.Count() != 0 && (rounds++) < 100);            
            
-            // await context.CallActivityWithRetryAsync(nameof(RollAccountOutOfEnterprise), retryOptions, args);
+            await context.CallActivityWithRetryAsync(nameof(RollAccountOutOfEnterprise), retryOptions, args);
             await context.CallActivityWithRetryAsync(nameof(SendUserNotification), retryOptions, args);
         }  
 
