@@ -97,7 +97,7 @@ namespace box_migration_automation
                 loggerConfiguration
                     .WriteTo.AzureTableStorageWithProperties(
                         CloudStorageAccount.Parse(tableStorageConnectionString)
-                        , storageTableName: "BoxMigrationLogs"
+                        , storageTableName: "BoxMigrationLogs2"
                         , propertyColumns: PropertyColumns
                         , keyGenerator: new KeyGenerator());
             }
