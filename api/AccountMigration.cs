@@ -87,6 +87,7 @@ namespace box_migration_automation
         private static readonly RetryOptions RetryOptions = new RetryOptions(
                                 firstRetryInterval: TimeSpan.FromSeconds(5),
                                 maxNumberOfAttempts: 3); 
+
         private static Task ActivateAccount(IDurableOrchestrationContext context, MigrationParams args)
             => context.CallActivityWithRetryAsync(nameof(SetAccountStatusToActive), RetryOptions, args);
 
@@ -129,13 +130,21 @@ namespace box_migration_automation
         public static async Task<(bool success, string msg)> UserAccountId(ILogger log, RequestParams args)
         {
             var boxClient = await Common.GetBoxAdminClient(log);
-            var users = await Query(log, () => boxClient.UsersManager.GetEnterpriseUsersAsync(filterTerm: args.UserEmail),
+            var username = args.UserEmail.Split('@', StringSplitOptions.RemoveEmptyEntries).First();
+            var users = await Query(log, () => boxClient.UsersManager.GetEnterpriseUsersAsync(filterTerm: $"{username}@"),
                 $"Fetch Box account(s) for login.");
-                
-            if(users.Entries.Count > 1)
+
+            var exactMatch = users.Entries.SingleOrDefault(e => e.Login.ToLowerInvariant().Equals(args.UserEmail.ToLowerInvariant()));
+            if (exactMatch != null)
             {
-                log.Warning($"Multiple Box accounts found for login.");
-                return (false, $"Multiple Box accounts found for login.");
+                log.Information($"Found Box account {{{Constants.UserId}}} exactly matching login.", exactMatch.Id);
+                return (true, exactMatch.Id);
+            }    
+            else if(users.Entries.Count > 1)
+            {
+                var logins = string.Join(", ", users.Entries.Select(e => e.Login));
+                log.Warning($"Multiple Box accounts found for login: {logins}");
+                return (false, $"Multiple Box accounts found for login: ");
             }
             else if(users.Entries.Count == 0)
             {
@@ -144,9 +153,9 @@ namespace box_migration_automation
             }
             else
             {
-                var userId = users.Entries.Single().Id;
-                log.Information($"Found single Box account {{{Constants.UserId}}} for login.", userId);
-                return (true, userId);
+                var user = users.Entries.Single();
+                log.Information($"Found Box account {{{Constants.UserId}}} based on username match for login {user.Login}.", user.Id);
+                return (true, user.Id);
             }
         }
 
