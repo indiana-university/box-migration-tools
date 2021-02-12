@@ -82,7 +82,7 @@ namespace box_migration_automation
             await ActivateAccount(context, args);
             await RemoveFilesFoldersAndInternalCollabs(context, args);
             await EmptyTrash(context, args);
-            await ConvertToPersonalAccount(context, args);
+            // await ConvertToPersonalAccount(context, args);
         }
         private static readonly RetryOptions RetryOptions = new RetryOptions(
                                 firstRetryInterval: TimeSpan.FromSeconds(5),
