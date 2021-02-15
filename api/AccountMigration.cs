@@ -124,7 +124,7 @@ namespace box_migration_automation
         private static async Task ConvertToPersonalAccount(IDurableOrchestrationContext context, MigrationParams args)
         {
             await context.CallActivityWithRetryAsync(nameof(RollAccountOutOfEnterprise), RetryOptions, args);
-            await context.CallActivityWithRetryAsync(nameof(SendUserNotification), RetryOptions, args);
+            //await context.CallActivityWithRetryAsync(nameof(SendUserNotification), RetryOptions, args);
         }
 
         public static async Task<(bool success, string msg)> UserAccountId(ILogger log, RequestParams args)
