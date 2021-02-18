@@ -4,8 +4,6 @@
         "AzureWebJobsStorage": "UseDevelopmentStorage=true",
         "FUNCTIONS_WORKER_RUNTIME": "dotnet",
         "BoxConfigJson": "<a json blob>",
-        "SendGridApiKey": "<a SendGrid API key with email send permissions>",
-        "MigrationNotificationFromAddress": "notifier@iu.edu",
         "LogTableStorageConnectionString":"<a connection string>",
         "LogFilePath": "<a path on your local file system>",
         "APPINSIGHTS_INSTRUMENTATIONKEY": "<a guid>",
