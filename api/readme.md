@@ -1,6 +1,6 @@
 # Box Migration Automation Webhooks
 
-These webhooks (HTTP API endpoints) faciliate the transition of an enterprise Box user to a read-only state. 
+These webhooks (HTTP API endpoints) facilitate the transition of an enterprise Box user to a read-only state. 
 
 # Notice of Use
 
@@ -245,11 +245,11 @@ Logs to Azure Application Insights, and ephemeral, high*-cost, cloud-hosted tele
 
 # Box Enterprise Account Rollout Webhook
 
+This webhook (HTTP API endpoint) facilitates the transition of an enterprise Box account to a personal account. We used [Azure Durable Functions](https://docs.microsoft.com/en-us/azure/azure-functions/durable/durable-functions-overview?tabs=csharp) for the implementation.
+
 # Endpoint
 
 ## AccountMigration
-
-We used [Azure Durable Functions](https://docs.microsoft.com/en-us/azure/azure-functions/durable/durable-functions-overview?tabs=csharp) for this implementation.
 
 **Purpose**: Convert Box enterprise acount to personal account.
 
@@ -284,7 +284,7 @@ We used [Azure Durable Functions](https://docs.microsoft.com/en-us/azure/azure-f
 **Request Body Format**:  
 ```
 { 
-  “UserEmail”: “Login of the user account.”,
+  “UserEmail”: “Login of the user account”,
 } 
 ```
 
