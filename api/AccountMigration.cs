@@ -9,8 +9,6 @@ using Box.V2;
 using Box.V2.Models;
 using System;
 using System.Linq;
-using SendGrid.Helpers.Mail;
-using SendGrid;
 using Serilog;
 using Microsoft.AspNetCore.Mvc;
 
@@ -125,7 +123,6 @@ namespace box_migration_automation
         {
             await context.CallActivityWithRetryAsync(nameof(SetPersonalAccountQuota), RetryOptions, args);
             await context.CallActivityWithRetryAsync(nameof(RollAccountOutOfEnterprise), RetryOptions, args);
-            //await context.CallActivityWithRetryAsync(nameof(SendUserNotification), RetryOptions, args);
         }
 
         public static async Task<(bool success, string msg)> UserAccountId(ILogger log, RequestParams args)
@@ -349,30 +346,6 @@ namespace box_migration_automation
                     throw new Exception($"{resp.StatusCode} '{respContent}'");
                 }
             }
-        }
-        
-        [FunctionName(nameof(SendUserNotification))]
-        public static Task SendUserNotification([ActivityTrigger] IDurableActivityContext context, ExecutionContext ctx)
-        {
-            var args =  context.GetInput<MigrationParams>();
-            var log = Common.GetLogger(ctx, args.UserId, args.UserEmail);
-
-            Task DoSend(){
-                var apiKey = Environment.GetEnvironmentVariable("SendGridApiKey");
-                var fromAddress = Environment.GetEnvironmentVariable("MigrationNotificationFromAddress");
-                var client = new SendGridClient(apiKey);
-
-                var message = new SendGridMessage();
-                message.SetFrom(new EmailAddress(fromAddress, "Box Migration Notifications"));
-                message.AddTo(new EmailAddress(args.UserEmail));
-                message.SetSubject("Box account migration update");
-                message.AddContent(MimeType.Text, $@"Hello, Your Box account has been migrated to a personal account. 
-                Any external collaborations you may have had were preserved, but any university-related data has been removed from your account.");
-
-                return client.SendEmailAsync(message);
-            }
-
-            return Command(log, DoSend, "Send account rollout notification");
         }
 
         private static async Task<List<BoxCollaboration>> GetFolderCollaborators(BoxClient client, string itemId)
