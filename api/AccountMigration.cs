@@ -123,6 +123,7 @@ namespace box_migration_automation
 
         private static async Task ConvertToPersonalAccount(IDurableOrchestrationContext context, MigrationParams args)
         {
+            await context.CallActivityWithRetryAsync(nameof(SetPersonalAccountQuota), RetryOptions, args);
             await context.CallActivityWithRetryAsync(nameof(RollAccountOutOfEnterprise), RetryOptions, args);
             //await context.CallActivityWithRetryAsync(nameof(SendUserNotification), RetryOptions, args);
         }
@@ -284,6 +285,19 @@ namespace box_migration_automation
             }
         }
 
+        [FunctionName(nameof(SetPersonalAccountQuota))]
+        public static async Task SetPersonalAccountQuota([ActivityTrigger] IDurableActivityContext context, ExecutionContext ctx)
+        {
+            var args =  context.GetInput<MigrationParams>();
+            var log = Common.GetLogger(ctx, args.UserId, args.UserEmail);
+           
+            var boxClient = await Common.GetBoxAdminClient(log);
+            var _50gb = (double)50 * 1024 * 1024 * 1024;
+            var request = new BoxUserRequest() { Id = args.UserId, SpaceAmount = _50gb };
+            await Command(log, () => boxClient.UsersManager.UpdateUserInformationAsync(request), 
+                "Set personal account quota to 50GB");
+        }
+       
         [FunctionName(nameof(RollAccountOutOfEnterprise))]
         public static async Task RollAccountOutOfEnterprise([ActivityTrigger] IDurableActivityContext context, ExecutionContext ctx)
         {
