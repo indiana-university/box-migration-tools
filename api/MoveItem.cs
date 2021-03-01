@@ -36,7 +36,7 @@ namespace box_migration_automation
             [HttpTrigger(AuthorizationLevel.Function, "post", Route = null)] HttpRequest req,ExecutionContext ctx)
         {
             var data = await Common.DeserializeRequestBody<RequestParams>(req);
-            var log = Common.GetLogger(ctx, req, data.UserId);
+            var log = Common.GetLogger(ctx, req, data.UserId, null);
 
             try
             {

@@ -48,10 +48,10 @@ namespace box_migration_automation
 
     public static class Common
     {
-        public static string Env(string key)
+        public static string Env(string key, bool required=false)
         {
             var value = System.Environment.GetEnvironmentVariable(key);
-            if (string.IsNullOrWhiteSpace(value))
+            if (string.IsNullOrWhiteSpace(value) && required)
             {
                 throw new Exception($"'{key}' is missing from the environment. This is a required setting.");
             }
@@ -68,6 +68,7 @@ namespace box_migration_automation
             Constants.GroupId,
             Constants.GroupName,
             Constants.ItemId,
+            Constants.ItemName,
             Constants.ItemType,
             Constants.ManagedFolderId,
             Constants.ManagedFolderName,
@@ -96,7 +97,7 @@ namespace box_migration_automation
                 loggerConfiguration
                     .WriteTo.AzureTableStorageWithProperties(
                         CloudStorageAccount.Parse(tableStorageConnectionString)
-                        , storageTableName: "BoxMigrationLogs"
+                        , storageTableName: "BoxMigrationLogs2"
                         , propertyColumns: PropertyColumns
                         , keyGenerator: new KeyGenerator());
             }
@@ -122,48 +123,85 @@ namespace box_migration_automation
 
         private static ILogger Logger = CreateLogger();
 
-        public static ILogger GetLogger(ExecutionContext ctx, HttpRequest req, string userId)
+        public static ILogger GetLogger(ExecutionContext ctx, HttpRequest req, string userId, string userLogin)
         {
             var correlationId = 
                 req.Headers.TryGetValue("CorrelationID", out var correlationIds)
                 ? correlationIds.FirstOrDefault() ?? ""
                 : "";
 
-            return Logger
+            return GetLogger(ctx, userId, userLogin)
                 .ForContext(Constants.CorrelationId, correlationId)
-                .ForContext(Constants.IPAddress, req.HttpContext.Connection.RemoteIpAddress)
+                .ForContext(Constants.IPAddress, req.HttpContext.Connection.RemoteIpAddress);
+        }
+
+        public static ILogger GetLogger(ExecutionContext ctx, string userId, string userLogin)
+        {
+            return Logger
                 .ForContext(Constants.FunctionName, ctx.FunctionName)
                 .ForContext(Constants.InvocationId, ctx.InvocationId)
-                .ForContext(Constants.UserId, userId);
+                .ForContext(Constants.UserId, userId)
+                .ForContext(Constants.UserLogin, userLogin);
         }
 
         private static BoxJWTAuth GetJwtAuth()
         {
-            var configJson = Env("BoxConfigJson");
+            var configJson = Env("BoxConfigJson", required:true);
             var config = BoxConfig.CreateFromJsonString(configJson);
             return new BoxJWTAuth(config);
         }
 
         public static async Task<BoxClient> GetBoxUserClient(ILogger log, string userId)
         {
-            return await Task.Run(() =>
+            try
             {
-                log.Information($"Creating Box user client as {{{Constants.BoxClientId}}}...", userId);
                 BoxJWTAuth boxJwtAuth = GetJwtAuth();
                 var userToken = boxJwtAuth.UserToken(userId);
-                return boxJwtAuth.UserClient(userToken, userId);
-            });
+                var boxUserClient = boxJwtAuth.UserClient(userToken, userId);
+                log.Information($"Created Box user client as {{{Constants.BoxClientId}}}...", userId);
+                return await Task.FromResult(boxUserClient);
+            }
+            catch (Exception ex)
+            {
+                log.Error(ex, $"Failed to create Box user client as {{{Constants.BoxClientId}}}...", userId);
+                throw new Exception ($"Failed to create Box user client as {userId}", ex);
+            }
         }
 
         public static async Task<BoxClient> GetBoxAdminClient(ILogger log)
         {
-            return await Task.Run(() =>
+            try
             {
-                log.Information("Creating Box admin client...");
                 BoxJWTAuth boxJwtAuth = GetJwtAuth();
                 var adminToken = boxJwtAuth.AdminToken();
-                return boxJwtAuth.AdminClient(adminToken);
-            });
+                var boxAdminClient = boxJwtAuth.AdminClient(adminToken);
+                log.Information($"Created Box admin client." );
+                return await Task.FromResult(boxAdminClient);
+
+            }
+            catch (Exception ex)
+            {
+                log.Error(ex, $"Failed to create Box admin client." ); 
+                throw new Exception ($"Failed to create Box Admin client", ex);
+            }               
+            
+        }
+
+        public static async Task<string> GetBoxAdminToken(ILogger log)
+        {
+            try
+            {
+                BoxJWTAuth boxJwtAuth = GetJwtAuth();
+                var adminToken = boxJwtAuth.AdminToken();
+                log.Information($"Created Box admin token.");
+                return await Task.FromResult(adminToken);
+
+            }
+            catch (Exception ex)
+            {
+                log.Error(ex, $"Failed to create Box admin token." ); 
+                throw new Exception ($"Failed to create Box admin token.", ex);
+            }
         }
 
         public static IActionResult HandleError(Exception ex,ILogger log)

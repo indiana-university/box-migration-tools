@@ -46,7 +46,7 @@ namespace box_migration_automation
             [HttpTrigger(AuthorizationLevel.Function, "post", Route = null)] HttpRequest req,ExecutionContext ctx)
         {
             var data = await Common.DeserializeRequestBody<RequestParams>(req);
-            var log = Common.GetLogger(ctx, req, data.UserLogin);
+            var log = Common.GetLogger(ctx, req, null, data.UserLogin);
 
             try
             {
@@ -54,7 +54,7 @@ namespace box_migration_automation
 
                 var adminClient = await Common.GetBoxAdminClient(log);
                 var user = await Common.GetUserForLogin(log, adminClient, data.UserLogin);
-                log = Common.GetLogger(ctx, req, user.Id);
+                log = Common.GetLogger(ctx, req, user.Id, data.UserLogin);
                 var userClient = await Common.GetBoxUserClient(log, user.Id);
                 var subfolders = await GetSubfolders(userClient, data.FolderId, user.Id);
                 return new OkObjectResult(new ResponseParams() { Folders = subfolders });

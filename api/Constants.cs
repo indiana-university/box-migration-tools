@@ -12,6 +12,7 @@ namespace box_migration_automation
         public const string GroupId = "GroupId";
         public const string GroupName = "GroupName";
         public const string ItemId = "ItemId";
+        public const string ItemName = "ItemName";
         public const string ItemType = "ItemType";
         public const string ManagedFolderId = "ManagedFolderId";
         public const string ManagedFolderName = "ManagedFolderName";
