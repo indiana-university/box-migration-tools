@@ -39,7 +39,7 @@ namespace box_migration_automation
             ExecutionContext ctx)
         {
             var data = await Common.DeserializeRequestBody<RequestParams>(req);
-            var log = Common.GetLogger(ctx, req, data.UserId);
+            var log = Common.GetLogger(ctx, req, data.UserId, null);
 
             try
             {

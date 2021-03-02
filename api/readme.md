@@ -1,6 +1,6 @@
 # Box Migration Automation Webhooks
 
-These webhooks (HTTP API endpoints) faciliate the transition of an enterprise Box user to a read-only state. 
+These webhooks (HTTP API endpoints) facilitate the transition of an enterprise Box user to a read-only state. 
 
 # Notice of Use
 
@@ -242,3 +242,75 @@ Logs to Azure Application Insights, and ephemeral, high*-cost, cloud-hosted tele
   } 
 ]
 ```
+
+# Box Enterprise Account Rollout Webhook
+
+This webhook (HTTP API endpoint) facilitates the transition of an enterprise Box account to a personal account. We used [Azure Durable Functions](https://docs.microsoft.com/en-us/azure/azure-functions/durable/durable-functions-overview?tabs=csharp) for the implementation.
+
+# Endpoint
+
+## AccountMigration
+
+**Purpose**: Convert Box enterprise acount to personal account.
+
+**Funcitonal Flow Steps**:
+1. MigrationOrchestrator:
+    - Make calls to all activity functions.
+2. SetAccountStatusToActive:
+    - Create an authenticated Box admin client.
+    - Use the admin client to set the user account status to `activate`.
+3. GetBoxItemsToRemove:
+    - Create an authenticated Box user client for the user identified by `UserId`.
+    - Use user client to list the items in account root and fetch all the Box items identified by `ItemId`.  
+    - Use user client to fetch all collaborations on the Box item identified by `ItemId`. 
+4. RemoveItem - Permanently delete any data owned by the given IU User.
+    - Create an authenticated Box user client for the user identified by `UserId`.  
+    - Use user client to permanently delete Box items (file, folder, collaboration) identified by `ItemId`.
+5. ListAllTheTrashedItems: 
+    - Create an authenticated Box user client for the user identified by `UserId`.
+    - Use user client to list all the trashed Box items.  
+6. PurgeTrashedItem:
+    - Create an authenticated Box user client for the user identified by `UserId`.  
+    - Use user client to delete all the listed Box trashed items identified by `ItemId`.
+7. SetPersonalAccountQuota: 
+    - Create an authenticated Box admin client.
+    - Use the admin client to set the user personal account quota to 50.0 GB.
+8. RollAccountOutOfEnterprise:
+    - Use admin token to make a HTTP PUT request to `https://api.box.com/2.0/users/:user_id/` to change the Enterprise value on the user account.
+
+
+**HTTP Method**: `POST`
+
+**Request Body Format**:  
+```
+{ 
+  “UserEmail”: “Login of the user account”,
+} 
+```
+
+**Response Status Code**: 202 (Accepted) with response body, or error information.
+ 
+**Response Format**:
+```
+{ 
+  “Id”: “The ID of the orchestration instance.”, 
+  “StatusQueryGetUri”: “The status URL of the orchestration instance - this will return 200 (OK) with response body”, 
+  “SendEventPostUri”: “The "raise event" URL of the orchestration instance.”, 
+  “TerminatePostUri”: “The "terminate" URL of the orchestration instance.”, 
+  “PurgeHistoryDeleteUri”: “The "purge history" URL of the orchestration instance.” 
+}
+``` 
+
+**StatusQueryGetUri Response Format**:
+```
+{ 
+  “Name”: “The name of the orchestrator function to start.”, 
+  “InstanceId”: “The ID of the orchestration instance.”, 
+  “RuntimeStatus”: “The runtime status of the instance”, 
+  “Input”: “The input of the function as a JSON value.”, 
+  “CustomStatus”: “Custom orchestration status in JSON format.”,
+  “Output”: “The output of the function”,
+  “CreatedTime”: “The time at which the orchestrator function started running.”,
+  “LastUpdatedTime”: “The time at which the orchestration last checkpointed.” 
+}
+``` 

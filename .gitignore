@@ -3,7 +3,7 @@
 ##
 ## Get latest from https://github.com/github/gitignore/blob/master/VisualStudio.gitignore
 
-# Azure functions local settings
+# Azure Functions localsettings file
 local.settings.json
 
 # User-specific files
@@ -352,3 +352,6 @@ MigrationBackup/
 # Ionide (cross platform F# VS Code tools) working folder
 .ionide/
 .DS_Store
+
+# vscode files
+.vscode
