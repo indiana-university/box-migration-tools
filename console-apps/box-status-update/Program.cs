@@ -35,7 +35,7 @@ namespace boxaccount_read_only
             ConsoleLog($"Filtering {enterpriseUsers.Entries.Count()} users...");
             var filteredUsers = enterpriseUsers.Entries
                 .OrderBy(u => u.Login)
-                .Where(u => false == AccountIsInactive(u))
+                .Where(u => false == AccountHasTargetStatus(u))
                 .Where(u => false == AccountInExclusionList(u))
                 .ToList();
 
@@ -60,8 +60,8 @@ namespace boxaccount_read_only
             ConsoleLog("Done!");
         }
 
-        private static bool AccountIsInactive(BoxUser u) 
-            => u.Status == "inactive";
+        private static bool AccountHasTargetStatus(BoxUser u) 
+            => u.Status == BoxStatus;
 
         private static bool AccountInExclusionList(BoxUser u)
         {
