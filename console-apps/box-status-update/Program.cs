@@ -22,7 +22,7 @@ namespace boxaccount_read_only
         };
         const int MaxConcurrentUpdates = 8;
         static string[] UserFields = new[]{"id", "name", "login", "status"};
-        private const string BoxReadOnlyStatus = "cannot_delete_edit_upload";
+        private const string BoxStatus = "inactive";
 
         static async Task Main(string[] args)
         {
@@ -35,7 +35,6 @@ namespace boxaccount_read_only
             ConsoleLog($"Filtering {enterpriseUsers.Entries.Count()} users...");
             var filteredUsers = enterpriseUsers.Entries
                 .OrderBy(u => u.Login)
-                .Where(u => false == AccountIsReadOnly(u))
                 .Where(u => false == AccountIsInactive(u))
                 .Where(u => false == AccountInExclusionList(u))
                 .ToList();
@@ -63,8 +62,6 @@ namespace boxaccount_read_only
 
         private static bool AccountIsInactive(BoxUser u) 
             => u.Status == "inactive";
-        private static bool AccountIsReadOnly(BoxUser u) 
-            => u.Status == BoxReadOnlyStatus;
 
         private static bool AccountInExclusionList(BoxUser u)
         {
@@ -150,7 +147,7 @@ namespace boxaccount_read_only
                 await boxAdminClient.UsersManager.UpdateUserInformationAsync(new BoxUserRequest()
                 {
                     Id = user.Id,
-                    Status = BoxReadOnlyStatus
+                    Status = BoxStatus
                 });
                 return new UpdateResult(user);                
             }
