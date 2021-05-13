@@ -15,14 +15,20 @@ namespace boxaccount_read_only
 {
     class Program
     {
+        // The status you want to update the accounts to.
+        // Options: https://developer.box.com/reference/put-users-id/#param-status
+        const string BoxStatus = "inactive";
+
+        // Local path to a log file
         const string LogFilePath = "/path/to/logfile.csv";
-        static string[] ExclusionList = new string[]{
-            // put in here the usernames of any accounts you wish to 
-            // exclude from the readonly conversion. 
-        };
+
+        // The username or login of any accounts you wish to 
+        // exclude from the status update. 
+        static string[] ExclusionList = new string[]{};
+
+        // Don't Edit Anything Below This Line
         const int MaxConcurrentUpdates = 8;
         static string[] UserFields = new[]{"id", "name", "login", "status"};
-        private const string BoxStatus = "inactive";
 
         static async Task Main(string[] args)
         {
