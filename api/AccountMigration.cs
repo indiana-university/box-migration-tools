@@ -329,7 +329,7 @@ namespace box_migration_automation
             var boxClient = await Common.GetBoxUserClient(log, args.UserId); 
             var trashedItems = await Query(log, ()=> boxClient.FoldersManager.GetTrashItemsAsync(1000, autoPaginate: true), 
                 "List all the trashed items");
-            return trashedItems.Entries.Select(i => new ItemParams(args, i.Id, i.Type, i.Name));
+            return trashedItems.Entries.Where(i => i.OwnedBy?.Id == args.UserId).Select(i => new ItemParams(args, i.Id, i.Type, i.Name));
         }
             
         public static async Task ConvertToPersonalAccount(string adminToken, MigrationParams args)
